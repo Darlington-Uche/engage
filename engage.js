@@ -2,7 +2,9 @@ const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase');
 
-const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ");
+const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ", {
+  handlerTimeout: 8 * 60 * 1000  // 6 minutes timeout
+});
 
 // Bot states
 const BOT_STATES = {
@@ -583,26 +585,39 @@ bot.command('clear', async (ctx) => {
   
   try {
     let messagesDeleted = 0;
-    let lastMessageId = ctx.message.message_id;
+    const startMessageId = ctx.message.message_id;
+    const endTime = Date.now() + (5 * 60 * 1000); // 5 minutes from now
     
-    while (messagesDeleted < 100) {
-      const messages = await ctx.telegram.getChatHistory(ctx.chat.id, 100, lastMessageId);
-      if (messages.length === 0) break;
-      
-      for (const message of messages) {
-        try {
-          await ctx.deleteMessage(message.message_id);
-          messagesDeleted++;
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (error) {
+    let msgId = startMessageId - 1;
+    
+    // Delete messages for 5 minutes
+    while (Date.now() < endTime && msgId > 0) {
+      try {
+        await ctx.telegram.deleteMessage(groupId, msgId);
+        messagesDeleted++;
+        
+        // Progressive delay to avoid rate limiting
+        if (messagesDeleted % 5 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 150));
+        } else if (messagesDeleted % 20 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
+      } catch (error) {
+        // Message doesn't exist or already deleted, continue
       }
       
-      lastMessageId = messages[messages.length - 1].message_id;
+      msgId--;
     }
     
-    ctx.reply(`🧹 Cleared ${messagesDeleted} messages.`);
+    const resultMsg = await ctx.reply(`🧹 Cleared ${messagesDeleted} messages in 5 minutes.`);
+    
+    // Auto-delete result message after 3 seconds
+    setTimeout(() => {
+      ctx.telegram.deleteMessage(groupId, resultMsg.message_id).catch(() => {});
+    }, 3000);
+    
   } catch (error) {
+    console.error('Clear command error:', error);
     ctx.reply('❌ Error clearing messages.');
   }
 });
