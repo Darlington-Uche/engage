@@ -12,7 +12,7 @@ const BOT_STATES = {
   CLOSED: 'closed'
 };
 
-// Utility functions
+// Utility functions for link matching
 const extractUsernameFromXLink = (url) => {
   const match = url.match(/https?:\/\/x\.com\/([^\/]+)/i) || 
                 url.match(/https?:\/\/twitter\.com\/([^\/]+)/i);
@@ -23,13 +23,23 @@ const isXLink = (text) => {
   return text && (text.includes('x.com/') || text.includes('twitter.com/'));
 };
 
-// NEW: Add automatic cleanup for expired muted X usernames
+// Check if user is admin
+const isAdmin = async (ctx, userId) => {
+  try {
+    const member = await ctx.telegram.getChatMember(ctx.chat.id, userId);
+    return member.status === 'administrator' || member.status === 'creator';
+  } catch (error) {
+    return false;
+  }
+};
+
+// Add automatic cleanup for expired muted X usernames
 const cleanupExpiredMutes = (groupData) => {
   const now = new Date();
   const twoDaysAgo = new Date(now.getTime() - (2 * 24 * 60 * 60 * 1000)); // 2 days ago
   
   for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
-    if (muteData.mutedAt < twoDaysAgo) {
+    if (new Date(muteData.mutedAt) < twoDaysAgo) {
       groupData.mutedXUsernames.delete(xUsername);
     }
   }
@@ -117,10 +127,10 @@ const muteUser = async (ctx, groupData, userId, xUsername = null, duration = 30)
       xUsername: xUsername
     });
 
-    // Also store the muted X username for future slot detection WITH TIMESTAMP
-    if (xUsername) {
+    // Only store X username for 2-day mutes (not 30-min mutes)
+    if (xUsername && duration === 2 * 24 * 60) {
       groupData.mutedXUsernames.set(xUsername.toLowerCase(), {
-        mutedAt: new Date(), // Add timestamp for cleanup
+        mutedAt: new Date(),
         mutedBy: ctx.from.id,
         xUsername: xUsername
       });
@@ -137,13 +147,21 @@ const cronJobs = new Map();
 // Commands
 bot.command('slot', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   if (groupData.state !== BOT_STATES.IDLE && groupData.state !== BOT_STATES.CLOSED) {
     return ctx.reply('Please end the current slot before starting a new one.');
   }
   
-  // NEW: Cleanup expired mutes before starting new slot
+  // Cleanup expired mutes before starting new slot
   cleanupExpiredMutes(groupData);
   
   groupData.state = BOT_STATES.SLOT_OPEN;
@@ -174,8 +192,8 @@ bot.command('slot', async (ctx) => {
     `📌 Rules:\n` +
     `• Drop only ONE X link\n` +
     `• No other messages allowed\n` +
-    `• Multiple links = 30min mute\n` +
-    `• Using muted user's link = 30min mute`;
+    `• Multiple links not allowed\n` +
+    `• Using muted user's link will get you muted too\n\n`;
   
   const sentMessage = await ctx.reply(welcomeMsg);
   await ctx.pinChatMessage(sentMessage.message_id);
@@ -185,6 +203,14 @@ bot.command('slot', async (ctx) => {
 
 bot.command('check', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   if (groupData.state !== BOT_STATES.SLOT_OPEN) {
@@ -212,7 +238,6 @@ bot.command('check', async (ctx) => {
   const checkMsg = `🔍 Checking phase started!\n\n` +
     `📸 Now send your SCREEN RECORD proof (media only)\n` +
     `• Only photos, videos, files allowed\n` +
-    `• No text messages (automatically restricted by Telegram)\n` +
     `• Bot will track who submitted proof\n\n` +
     `⚠️ If you are in SR list, you must wait for admin approval after submitting new proof`;
   
@@ -224,6 +249,14 @@ bot.command('check', async (ctx) => {
 
 bot.command('safe', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   if (groupData.safeUsers.size === 0) {
@@ -241,6 +274,14 @@ bot.command('safe', async (ctx) => {
 
 bot.command('scam', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   const scamUsers = new Map();
@@ -267,6 +308,14 @@ bot.command('scam', async (ctx) => {
 
 bot.command('srlist', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   if (groupData.srList.size === 0) {
@@ -285,6 +334,14 @@ bot.command('srlist', async (ctx) => {
 
 bot.command('sr', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   const targetUser = ctx.message.reply_to_message?.from || 
@@ -294,17 +351,17 @@ bot.command('sr', async (ctx) => {
     return ctx.reply('Please reply to a user or tag them to use /sr');
   }
   
-  const userId = targetUser.id.toString();
+  const targetUserId = targetUser.id.toString();
   
   const isAlreadyInSR = Array.from(groupData.srList.values()).some(data => 
-    data.userId.toString() === userId
+    data.userId.toString() === targetUserId
   );
   
   if (isAlreadyInSR) {
     return ctx.reply('❌ User is already in SR list.');
   }
   
-  if (!groupData.userLinks.has(userId)) {
+  if (!groupData.userLinks.has(targetUserId)) {
     return ctx.reply('❌ This user did not drop any X link.');
   }
   
@@ -314,13 +371,13 @@ bot.command('sr', async (ctx) => {
     username: targetUser.username || targetUser.first_name
   });
   
-  if (groupData.safeUsers.has(userId)) {
-    groupData.safeUsers.delete(userId);
+  if (groupData.safeUsers.has(targetUserId)) {
+    groupData.safeUsers.delete(targetUserId);
   }
   
   await saveGroupData(groupId, groupData);
   
-  const userLinkData = groupData.userLinks.get(userId);
+  const userLinkData = groupData.userLinks.get(targetUserId);
   const xUsername = userLinkData ? userLinkData.xUsername : 'N/A';
   
   const warningMsg = `@${targetUser.username || targetUser.first_name} Looks like the screen record proof you dropped isn't clear enough or isn't for you (X: ${xUsername}). Please send the correct one or you will be flagged as scam and muted for days.\n\n📋 SR list - wait for approval`;
@@ -329,6 +386,14 @@ bot.command('sr', async (ctx) => {
 
 bot.command('rm', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   const args = ctx.message.text.split(' ');
@@ -341,19 +406,19 @@ bot.command('rm', async (ctx) => {
     const removedUser = groupData.srList.get(number);
     groupData.srList.delete(number);
     
-    const userId = removedUser.userId.toString();
+    const removedUserId = removedUser.userId.toString();
     const hasMedia = ctx.message.reply_to_message?.photo || ctx.message.reply_to_message?.video || 
                     ctx.message.reply_to_message?.document || ctx.message.reply_to_message?.video_note;
     
     if (hasMedia) {
-      groupData.safeUsers.set(userId, {
+      groupData.safeUsers.set(removedUserId, {
         username: removedUser.username,
         timestamp: new Date(),
         approved: true
       });
       await ctx.reply(`✅ Removed user ${number} from SR list and added to safe list.`);
     } else {
-      await ctx.reply(`✅ Removed user ${number} from SR list. They can now submit media for approval.`);
+      await ctx.reply(`✅ Removed user ${number} from SR list.`);
     }
     
     await saveGroupData(groupId, groupData);
@@ -364,17 +429,73 @@ bot.command('rm', async (ctx) => {
 
 bot.command('total', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   ctx.reply(`📊 Total X links dropped: ${groupData.linkCount}`);
 });
 
+// Show list of muted users and muted X usernames
+bot.command('mutels', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  let groupData = convertToMaps(await getGroupData(groupId));
+  
+  if (groupData.mutedUsers.size === 0 && groupData.mutedXUsernames.size === 0) {
+    return ctx.reply('🔇 No muted users at the moment.');
+  }
+  
+  let output = '';
+  if (groupData.mutedUsers.size > 0) {
+    output += '🔇 Muted users:\n\n';
+    groupData.mutedUsers.forEach((data, userId) => {
+      const untilDate = new Date(data.until * 1000);
+      const remainingMs = Math.max(0, (data.until * 1000) - Date.now());
+      const remainingMin = Math.ceil(remainingMs / (60 * 1000));
+      output += `• @${data.username || 'No username'} (until ${untilDate.toLocaleString()} — ${remainingMin} min left)\n`;
+    });
+  }
+  
+  if (groupData.mutedXUsernames.size > 0) {
+    output += '\n🔗 Muted X usernames (2-day mutes):\n\n';
+    groupData.mutedXUsernames.forEach((data, key) => {
+      const mutedAt = data.mutedAt ? new Date(data.mutedAt) : new Date();
+      const mutedAgoMin = Math.ceil((Date.now() - mutedAt.getTime()) / (60 * 1000));
+      output += `• ${data.xUsername} (muted ${mutedAgoMin} min ago)\n`;
+    });
+  }
+
+  ctx.reply(output);
+});
+
 bot.command('muteall', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   const args = ctx.message.text.split(' ');
-  let duration = 2 * 24 * 60;
+  let duration = 2 * 24 * 60; // Default 2 days
   
   if (args.length > 1) {
     const timeMatch = args[1].match(/(\d+)d/);
@@ -383,20 +504,41 @@ bot.command('muteall', async (ctx) => {
     }
   }
   
-  for (const userId of groupData.scamUsers.keys()) {
-    await muteUser(ctx, groupData, userId, null, duration);
+  let mutedCount = 0;
+  
+  // Mute scam users first
+  for (const [userId, userData] of groupData.userLinks.entries()) {
+    const isScam = !groupData.safeUsers.has(userId) && !groupData.srList.has(userId);
+    
+    if (isScam) {
+      const xUsername = userData.xUsername;
+      await muteUser(ctx, groupData, userId, xUsername, duration);
+      mutedCount++;
+    }
   }
   
-  groupData.srList.forEach((data) => {
-    muteUser(ctx, groupData, data.userId, null, duration);
+  // Mute SR list users
+  groupData.srList.forEach(async (data) => {
+    const userLinkData = groupData.userLinks.get(data.userId.toString());
+    const xUsername = userLinkData ? userLinkData.xUsername : null;
+    await muteUser(ctx, groupData, data.userId, xUsername, duration);
+    mutedCount++;
   });
   
   await saveGroupData(groupId, groupData);
-  ctx.reply(`🔇 Muted all scam and SR list users for ${duration / (24 * 60)} days.`);
+  ctx.reply(`🔇 Muted ${mutedCount} users for ${duration / (24 * 60)} days.`);
 });
 
 bot.command('end', async (ctx) => {
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   let groupData = convertToMaps(await getGroupData(groupId));
   
   groupData.state = BOT_STATES.CLOSED;
@@ -409,14 +551,15 @@ bot.command('end', async (ctx) => {
   }
   
   await ctx.telegram.setChatPermissions(ctx.chat.id, {
-    can_send_messages: true,
-    can_send_media_messages: true,
-    can_send_other_messages: true,
-    can_add_web_page_previews: true
+    can_send_messages: false,
+    can_send_media_messages: false,
+    can_send_other_messages: false,
+    can_add_web_page_previews: false
   });
   
   stopCronJobs(groupId);
   
+  // Clear only slot-specific data
   groupData.userLinks.clear();
   groupData.safeUsers.clear();
   groupData.scamUsers.clear();
@@ -425,10 +568,19 @@ bot.command('end', async (ctx) => {
   groupData.srCounter = 1;
   
   await saveGroupData(groupId, groupData);
-  ctx.reply('✅ Slot ended. Cache cleared. Group returned to normal.\n\n⚠️ Muted users remain muted for their duration.');
+  ctx.reply('✅ Slot ended. Get ready for the next one!');
 });
 
 bot.command('clear', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
   try {
     let messagesDeleted = 0;
     let lastMessageId = ctx.message.message_id;
@@ -451,8 +603,40 @@ bot.command('clear', async (ctx) => {
     
     ctx.reply(`🧹 Cleared ${messagesDeleted} messages.`);
   } catch (error) {
-    ctx.reply('❌ Error clearing messages. Make sure I have admin permissions.');
+    ctx.reply('❌ Error clearing messages.');
   }
+});
+
+bot.command('help', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  const helpMsg = `🤖 **ENGAGE BOT - ADMIN COMMANDS**\n\n` +
+    `📌 **SLOT MANAGEMENT:**\n` +
+    `/slot - Start a new slot session\n` +
+    `/check - Move to checking phase (SR proof)\n` +
+    `/end - End current slot and close chat\n\n` +
+    `📊 **USER LISTS:**\n` +
+    `/safe - Show safe users (submitted SR proof)\n` +
+    `/scam - Show scam users (no SR proof)\n` +
+    `/srlist - Show SR list (waiting approval)\n` +
+    `/total - Show total X links dropped\n\n` +
+    `👤 **USER MANAGEMENT:**\n` +
+    `/sr - Add user to SR list (reply to user)\n` +
+    `/rm <number> - Remove user from SR list\n\n` +
+    `🔇 **MUTING:**\n` +
+    `/muteall - Mute all scam & SR list users (2 days)\n` +
+    `/mutels - Show list of muted users & X usernames\n\n` +
+    `⚠️ **NOTE:** Only admins can use these commands!\n` +
+    `Non-admins will have command message deleted.`;
+  
+  ctx.reply(helpMsg);
 });
 
 // Message handler for slot phase
@@ -461,23 +645,30 @@ bot.on('message', async (ctx) => {
   if (ctx.message.text && ctx.message.text.startsWith('/')) return;
   
   const groupId = ctx.chat.id;
+  const userId = ctx.from.id.toString();
   let groupData = convertToMaps(await getGroupData(groupId));
   
-  // NEW: Cleanup expired mutes before processing messages
+  // Cleanup expired mutes
   cleanupExpiredMutes(groupData);
   
   if (groupData.state === BOT_STATES.SLOT_OPEN) {
-    const userId = ctx.from.id.toString();
     const messageText = ctx.message.text || '';
     
+    // User already dropped a link - check for multiple links
     if (groupData.userLinks.has(userId)) {
-      await ctx.deleteMessage();
-      await muteUser(ctx, groupData, userId, null, 30);
-      await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple links detected.`);
-      await saveGroupData(groupId, groupData);
-      return;
+      if (isXLink(messageText)) {
+        await ctx.deleteMessage();
+        await muteUser(ctx, groupData, userId, null, 30); // 30 mins, no X username saved
+        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple links detected.`);
+        await saveGroupData(groupId, groupData);
+        return;
+      } else {
+        await ctx.deleteMessage();
+        return;
+      }
     }
     
+    // New user dropping a link
     if (isXLink(messageText)) {
       const xUsername = extractUsernameFromXLink(messageText);
       
@@ -487,11 +678,12 @@ bot.on('message', async (ctx) => {
         return;
       }
       
+      // Check if X username is in muted list
       const isMutedUsername = groupData.mutedXUsernames.has(xUsername.toLowerCase());
       
       if (isMutedUsername) {
         await ctx.deleteMessage();
-        await muteUser(ctx, groupData, userId, xUsername, 30);
+        await muteUser(ctx, groupData, userId, xUsername, 30); // 30 mins, no X username saved for this
         await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (${xUsername}).`);
         await saveGroupData(groupId, groupData);
         return;
@@ -512,7 +704,6 @@ bot.on('message', async (ctx) => {
   }
   
   else if (groupData.state === BOT_STATES.CHECKING) {
-    const userId = ctx.from.id.toString();
     
     if (!groupData.userLinks.has(userId)) {
       return;
@@ -536,6 +727,7 @@ bot.on('message', async (ctx) => {
           timestamp: new Date(),
           approved: true
         });
+        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} your SR has been received ✅`);
         await saveGroupData(groupId, groupData);
       }
     }
