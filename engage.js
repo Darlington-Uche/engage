@@ -1,8 +1,42 @@
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase');
+const express = require('express');
 
 const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ");
+const app = express();
+
+// Use webhook instead of polling
+const WEBHOOK_DOMAIN = 'https://engage-sobe.onrender.com';
+const WEBHOOK_PATH = '/webhook';
+const PORT = process.env.PORT || 3000;
+
+// Configure webhook
+app.use(express.json());
+app.use(bot.webhookCallback(WEBHOOK_PATH));
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.send('Bot is running!');
+});
+
+// Set webhook on startup
+async function setWebhook() {
+  try {
+    await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
+    console.log('Webhook set successfully');
+  } catch (error) {
+    console.error('Error setting webhook:', error);
+  }
+}
+
+// Start server and set webhook
+app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT}`);
+  await setWebhook();
+  console.log('Bot started successfully with webhooks');
+});
+
 
 // Bot states
 const BOT_STATES = {
@@ -811,11 +845,9 @@ function stopCronJobs(groupId) {
     cronJobs.delete(`sr_reminder_${groupId}`);
   }
 }
+// Export the Express app for Render
+module.exports = app;
 
-// Start bot
-bot.launch().then(() => {
-  console.log('Bot started successfully');
-});
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
