@@ -2,9 +2,7 @@ const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase');
 
-const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ", {
-  handlerTimeout: 8 * 60 * 1000  // 6 minutes timeout
-});
+const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ");
 
 // Bot states
 const BOT_STATES = {
@@ -583,43 +581,61 @@ bot.command('clear', async (ctx) => {
     return;
   }
   
-  try {
-    let messagesDeleted = 0;
-    const startMessageId = ctx.message.message_id;
-    const endTime = Date.now() + (5 * 60 * 1000); // 5 minutes from now
-    
-    let msgId = startMessageId - 1;
-    
-    // Delete messages for 5 minutes
-    while (Date.now() < endTime && msgId > 0) {
-      try {
-        await ctx.telegram.deleteMessage(groupId, msgId);
-        messagesDeleted++;
+  const commandMessageId = ctx.message.message_id;
+  
+  // Send initial message
+  const clearingMsg = await ctx.reply('🧹 Starting to clear messages...');
+  
+  // Run clearing in background without waiting
+  (async () => {
+    try {
+      let messagesDeleted = 0;
+      const startMessageId = ctx.message.message_id;
+      const endTime = Date.now() + (5 * 60 * 1000); // 5 minutes
+      
+      let msgId = startMessageId - 1;
+      let batchCount = 0;
+      
+      // Delete messages in batches of 50
+      while (Date.now() < endTime && msgId > 0) {
+        batchCount = 0;
         
-        // Progressive delay to avoid rate limiting
-        if (messagesDeleted % 5 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 150));
-        } else if (messagesDeleted % 20 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+        // Delete 50 messages in one batch
+        while (batchCount < 50 && msgId > 0 && Date.now() < endTime) {
+          try {
+            await ctx.telegram.deleteMessage(groupId, msgId);
+            messagesDeleted++;
+            batchCount++;
+          } catch (error) {
+            // Message doesn't exist, continue
+          }
+          msgId--;
         }
-      } catch (error) {
-        // Message doesn't exist or already deleted, continue
+        
+        // Sleep for 10 seconds after each batch of 50
+        if (msgId > 0 && Date.now() < endTime) {
+          await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds
+        }
       }
       
-      msgId--;
+      // Send final result
+      const finalMsg = await ctx.telegram.sendMessage(groupId, `✅ Cleared ${messagesDeleted} messages.`);
+      
+      // Delete all three messages after 3 seconds
+      setTimeout(async () => {
+        try {
+          await ctx.telegram.deleteMessage(groupId, commandMessageId); // Delete /clear command
+          await ctx.telegram.deleteMessage(groupId, clearingMsg.message_id); // Delete "Starting to clear..."
+          await ctx.telegram.deleteMessage(groupId, finalMsg.message_id); // Delete final result
+        } catch (error) {
+          console.error('Error deleting messages:', error);
+        }
+      }, 3000);
+      
+    } catch (error) {
+      console.error('Clear command error:', error);
     }
-    
-    const resultMsg = await ctx.reply(`🧹 Cleared ${messagesDeleted} messages in 5 minutes.`);
-    
-    // Auto-delete result message after 3 seconds
-    setTimeout(() => {
-      ctx.telegram.deleteMessage(groupId, resultMsg.message_id).catch(() => {});
-    }, 3000);
-    
-  } catch (error) {
-    console.error('Clear command error:', error);
-    ctx.reply('❌ Error clearing messages.');
-  }
+  })();
 });
 
 bot.command('help', async (ctx) => {
