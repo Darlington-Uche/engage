@@ -2,6 +2,7 @@ const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase');
 const express = require('express');
+require('dotenv').config();
 
 const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ");
 const app = express();
