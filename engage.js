@@ -366,6 +366,43 @@ bot.command('srlist', async (ctx) => {
   
   ctx.reply(srList);
 });
+bot.command('rl', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+
+  // Check if admin
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  const rulesMessage = `🌟 GROUP RULES 🌟
+(Please read carefully)
+
+1️⃣ Group opens only during session times.
+Drop your Twitter (X) post link in the group during this period.
+
+2️⃣ Only ONE X post link per user.
+Multiple links are not allowed 🚫.
+
+3️⃣ Group closes 1 hour 30 minutes after opening.
+All shared links will be retweeted from a single TL ID 📄.
+
+4️⃣ You MUST like all tweets retweeted in the TL ID —
+Go one by one until you reach the final GIF tweet at the bottom.
+
+5️⃣ After completing all likes, type "AD" or "All Done" in the group.
+This step is mandatory ✔️.
+
+📝 NOTE:
+If admins request a Screen Recording (SR), you must send a clear recording showing your likes on the TL ID with your profile visible.
+
+⚠️ ATTENTION:
+Please follow all rules strictly.
+Violators will be marked as scammers and banned 🚨.`;
+
+  await ctx.reply(rulesMessage);
+});
 
 bot.command('sr', async (ctx) => {
   const groupId = ctx.chat.id;
