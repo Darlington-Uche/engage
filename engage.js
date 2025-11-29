@@ -4,7 +4,7 @@ const db = require('./firebase');
 const express = require('express');
 require('dotenv').config();
 
-const bot = new Telegraf("8500910728:AAHrHfzUOuMYblDN3-ILzTXwVqJLFmWBgeQ");
+const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 const app = express();
 
 // Use webhook instead of polling
