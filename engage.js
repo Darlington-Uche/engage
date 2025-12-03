@@ -37,14 +37,6 @@ app.listen(PORT, async () => {
   console.log('Bot started successfully with webhooks');
 });
 
-
-// Initialize Firebase Admin
-const serviceAccount = require('./data.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-const db = admin.firestore();
-
 const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 
 // ============= CONSTANTS & CONFIGURATION =============
