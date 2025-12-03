@@ -6,21 +6,24 @@ require('dotenv').config();
 
 const app = express();
 
-// Use webhook instead of polling
+// Initialize bot BEFORE using it
+const bot = new Telegraf(process.env.BOT_T || "8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
+
+// Webhook config
 const WEBHOOK_DOMAIN = 'https://engage-sobe.onrender.com';
 const WEBHOOK_PATH = '/webhook';
 const PORT = process.env.PORT || 3000;
 
-// Configure webhook
+// Middlewares
 app.use(express.json());
 app.use(bot.webhookCallback(WEBHOOK_PATH));
 
-// Health check endpoint
+// Health check
 app.get('/', (req, res) => {
   res.send('Bot is running!');
 });
 
-// Set webhook on startup
+// Set webhook
 async function setWebhook() {
   try {
     await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
@@ -30,14 +33,12 @@ async function setWebhook() {
   }
 }
 
-// Start server and set webhook
+// Start server
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await setWebhook();
   console.log('Bot started successfully with webhooks');
 });
-
-const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
