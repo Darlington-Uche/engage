@@ -3,7 +3,7 @@ const cron = require('node-cron');
 const db = require('./firebase.js');
 const express = require('express');
 require('dotenv').config();
-
+const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 const app = express();
 
 // Use webhook instead of polling
@@ -39,7 +39,7 @@ app.listen(PORT, async () => {
 
 
 
-const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
+
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
