@@ -6,24 +6,21 @@ require('dotenv').config();
 
 const app = express();
 
-// Initialize bot BEFORE using it
-const bot = new Telegraf(process.env.BOT_T || "8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
-
-// Webhook config
+// Use webhook instead of polling
 const WEBHOOK_DOMAIN = 'https://engage-sobe.onrender.com';
 const WEBHOOK_PATH = '/webhook';
 const PORT = process.env.PORT || 3000;
 
-// Middlewares
+// Configure webhook
 app.use(express.json());
 app.use(bot.webhookCallback(WEBHOOK_PATH));
 
-// Health check
+// Health check endpoint
 app.get('/', (req, res) => {
   res.send('Bot is running!');
 });
 
-// Set webhook
+// Set webhook on startup
 async function setWebhook() {
   try {
     await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
@@ -33,12 +30,22 @@ async function setWebhook() {
   }
 }
 
-// Start server
+// Start server and set webhook
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await setWebhook();
   console.log('Bot started successfully with webhooks');
 });
+
+
+// Initialize Firebase Admin
+const serviceAccount = require('./data.json');
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+const db = admin.firestore();
+
+const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
@@ -402,7 +409,7 @@ const stopCronJobs = (groupId) => {
   }
 };
 
-// ============= BOT COMMANDS =============
+/// ============= BOT COMMANDS =============
 bot.command('slot', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -421,8 +428,8 @@ bot.command('slot', async (ctx) => {
   // Clear all data except muted users
   groupData = {
     ...getDefaultGroupData(),
-    mutedXUsernames: groupData.mutedXUsernames, // Keep muted users
-    mutedUsers: new Map() // Clear temporary mutes
+    mutedXUsernames: groupData.mutedXUsernames,
+    mutedUsers: new Map()
   };
   
   groupData.state = BOT_STATES.SLOT_OPEN;
@@ -431,8 +438,9 @@ bot.command('slot', async (ctx) => {
   // Update group title
   try {
     const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\s*\{.*\}/, '');
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} {open}`);
+    const baseTitle = currentTitle.replace(/\s*\|\|.*/, '');
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || OPEN`);
+
   } catch (error) {
     console.log('No permission to change group name');
   }
@@ -449,7 +457,11 @@ bot.command('slot', async (ctx) => {
   });
   
   await saveGroupData(groupId, groupData);
-  
+
+  // 🟢 SEND STICKER HERE
+  await ctx.replyWithSticker('AgACAgUAAxkBAAE-wfRpMRvIQhcuekoZw6iMAAHfFcJACMMAAggMaxvZcIlVVmtxWMSnNOcBAAMCAANtAAM2BA');  
+  // Replace the ID above with your OWN sticker ID
+
   const welcomeMsg = `🎰 Slot opened! Members can now drop their X links.\n\n` +
     `📌 Rules:\n` +
     `• Drop only ONE X link\n` +
@@ -463,7 +475,6 @@ bot.command('slot', async (ctx) => {
   groupData.currentPinnedMessageId = sentMessage.message_id;
   await saveGroupData(groupId, groupData);
   
-  // Start reminder cron job
   startSlotReminderJob(ctx, groupId);
 });
 
@@ -525,8 +536,9 @@ bot.command('check', async (ctx) => {
   // Update group title
   try {
     const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\s*\{.*\}/, '');
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} {checking}`);
+    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || TRACKING`);
+
   } catch (error) {
     console.log('No permission to change group name');
   }
@@ -1206,8 +1218,9 @@ bot.command('end', async (ctx) => {
   // Update group title
   try {
     const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\s*\{.*\}/, '');
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} {closed}`);
+    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || CLOSED`);
+    
   } catch (error) {
     console.log('No permission to change group name');
   }
@@ -1240,7 +1253,7 @@ bot.command('end', async (ctx) => {
   
   await saveGroupData(groupId, groupData);
   
-  ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared. Muted users data preserved in database.');
+  ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared.');
 });
 
 // ============= MESSAGE HANDLERS =============
