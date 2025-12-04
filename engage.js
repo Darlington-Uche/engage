@@ -504,7 +504,49 @@ bot.command('open', async (ctx) => {
   
   startSlotReminderJob(ctx, groupId);
 });
+bot.command('stats', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
 
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  let groupData = await getGroupData(groupId);
+
+  // Calculate statistics
+  const totalParticipants = groupData.userLinks.size;
+  
+  // AD completed users (from safeUsers)
+  const adCompleted = groupData.safeUsers.size;
+  
+  // SR pending users (from srList)
+  const srPending = groupData.srList.size;
+  
+  // Non-AD users (dropped link but not in safeUsers)
+  const nonAdUsers = new Map();
+  for (const [uid, linkData] of groupData.userLinks.entries()) {
+    if (!groupData.safeUsers.has(uid)) {
+      nonAdUsers.set(uid, linkData);
+    }
+  }
+  const nonAdPending = nonAdUsers.size - srPending; // Subtract SR list from non-AD
+
+  // Format the statistics message
+  const statsMessage = 
+    `📊 *SLOT STATISTICS*\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `👥 *Total Participants:* ${totalParticipants}\n` +
+    `✅ *AD Completed:* ${adCompleted}\n` +
+    `⏳ *Non-AD Pending:* ${Math.max(0, nonAdPending)}\n` +
+    `📋 *SR List Pending:* ${srPending}\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `*State:* ${groupData.state.toUpperCase()}\n` +
+    `*Locked:* ${groupData.locked ? 'Yes 🔒' : 'No 🔓'}`;
+
+  await ctx.reply(statsMessage, { parse_mode: "Markdown" });
+});
 bot.command('loc', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -562,12 +604,11 @@ bot.command('loc', async (ctx) => {
     }
 
     await ctx.reply('🔒 Group locked. Only admins can send messages.');
-    await ctx.replyWithPhoto({ source: 'check.png' });
+    await ctx.replyWithPhoto({ source: 'close.png' });
 
   } catch (error) {
     console.error('Error locking group:', error);
-    await ctx.reply('❌ Failed to lock group. Make sure the bot is an admin with full rights.');
-  }
+     }
 });
 
 bot.command('check', async (ctx) => {
