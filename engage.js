@@ -449,9 +449,6 @@ bot.command('slot', async (ctx) => {
   
   await saveGroupData(groupId, groupData);
 
-  // 🟢 SEND STICKER HERE
-  await ctx.replyWithSticker('AgACAgUAAxkBAAE-wfRpMRvIQhcuekoZw6iMAAHfFcJACMMAAggMaxvZcIlVVmtxWMSnNOcBAAMCAANtAAM2BA');  
-  // Replace the ID above with your OWN sticker ID
 
   const welcomeMsg = `🎰 Slot opened! Members can now drop their X links.\n\n` +
     `📌 Rules:\n` +
@@ -462,6 +459,7 @@ bot.command('slot', async (ctx) => {
   
   const sentMessage = await ctx.reply(welcomeMsg);
   await ctx.pinChatMessage(sentMessage.message_id);
+  await ctx.replyWithPhoto({ source: 'open.png' });
   
   groupData.currentPinnedMessageId = sentMessage.message_id;
   await saveGroupData(groupId, groupData);
@@ -589,6 +587,7 @@ bot.command('check', async (ctx) => {
       });
 
       await ctx.reply("🔒 Group locked — checking time is over.");
+      await ctx.replyWithPhoto({ source: 'check.png' });
 
       // -------------------------------------
       // AUTO CALL MUTEALL
