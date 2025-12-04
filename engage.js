@@ -439,7 +439,7 @@ const stopCronJobs = (groupId) => {
 };
 
 /// ============= BOT COMMANDS =============
-bot.command('slot', async (ctx) => {
+bot.command('open', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -509,7 +509,6 @@ bot.command('loc', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
-  // Check permission
   if (!await isAdmin(ctx, userId)) {
     await ctx.deleteMessage();
     return;
@@ -523,34 +522,31 @@ bot.command('loc', async (ctx) => {
 
   try {
 
-    // 🔥 LOCK THE GROUP FOR ALL NON-ADMINS
-    await ctx.setChatPermissions({
+    // 🔥 LOCK THE GROUP FOR EVERYONE EXCEPT ADMINS
+    await ctx.telegram.setChatPermissions(groupId, {
       can_send_messages: false,
       can_send_media_messages: false,
       can_send_polls: false,
       can_send_other_messages: false,
-      can_add_web_page_previews: false,
-      can_change_info: false,
-      can_invite_users: false,
-      can_pin_messages: false
+      can_add_web_page_previews: false
     });
 
     // Save lock state
     groupData.locked = true;
     await saveGroupData(groupId, groupData);
 
-    // Stop cron reminders
+    // Stop cron jobs
     stopCronJobs(groupId);
 
-    await ctx.reply('🔒 Group locked. Reminders stopped. Only admins can send messages.');
+    await ctx.reply('🔒 Group locked. Only admins can send messages.');
     await ctx.replyWithPhoto({ source: 'check.png' });
-    
-    
+
   } catch (error) {
     console.error('Error locking group:', error);
-    await ctx.reply('❌ Failed to lock group. Make sure the bot is an admin with proper permissions.');
+    await ctx.reply('❌ Failed to lock group. Make sure the bot is an admin with full rights.');
   }
 });
+
 
 bot.command('check', async (ctx) => {
   const groupId = ctx.chat.id;
