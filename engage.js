@@ -52,6 +52,44 @@ const groupDataCache = new Map();
 const PIN_INTERVAL = 10; // minutes
 
 // ============= UTILITY FUNCTIONS =============
+
+async function getTargetUser(ctx) {
+  const msg = ctx.message;
+
+  // 1️⃣ If replying to a user
+  if (msg.reply_to_message) {
+    return msg.reply_to_message.from;
+  }
+
+  // 2️⃣ If user mentioned by username like @abc
+  if (msg.entities) {
+    for (let e of msg.entities) {
+      if (e.type === "mention") {
+        const username = msg.text.substring(e.offset + 1, e.offset + e.length); // remove @
+        try {
+          const user = await ctx.telegram.getChatMember(ctx.chat.id, username);
+          return user.user;
+        } catch (err) {}
+      }
+    }
+  }
+
+  // 3️⃣ If user ID or text name after command
+  const parts = msg.text.split(" ");
+  if (parts[1]) {
+    const id = parts[1].replace("@", "");
+
+    try {
+      const user = await ctx.telegram.getChatMember(ctx.chat.id, id);
+      return user.user;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 async function muteAllUsers(ctx, groupData, groupId) {
   let mutedCount = 0;
   const failedMutes = [];
@@ -470,33 +508,43 @@ bot.command('slot', async (ctx) => {
 bot.command('loc', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
-  
+
+  // Check permission
   if (!await isAdmin(ctx, userId)) {
     await ctx.deleteMessage();
     return;
   }
-  
+
   let groupData = await getGroupData(groupId);
-  
+
   if (groupData.state !== BOT_STATES.SLOT_OPEN && groupData.state !== BOT_STATES.CHECKING) {
     return ctx.reply('No active slot or checking phase to lock.');
   }
-  
-  // Restrict all users except admins from sending messages
+
   try {
-    
-    await ctx.restrictChatMember(groupId, userId, {
-  permissions: {}  
-});
-    
-    // Save lock state in your database
+
+    // 🔥 LOCK THE GROUP FOR ALL NON-ADMINS
+    await ctx.setChatPermissions({
+      can_send_messages: false,
+      can_send_media_messages: false,
+      can_send_polls: false,
+      can_send_other_messages: false,
+      can_add_web_page_previews: false,
+      can_change_info: false,
+      can_invite_users: false,
+      can_pin_messages: false
+    });
+
+    // Save lock state
     groupData.locked = true;
     await saveGroupData(groupId, groupData);
-    
-    // Stop reminder jobs
+
+    // Stop cron reminders
     stopCronJobs(groupId);
+
+    await ctx.reply('🔒 Group locked. Reminders stopped. Only admins can send messages.');
+    await ctx.replyWithPhoto({ source: 'check.png' });
     
-    await ctx.reply('🔒 Group locked. Reminders stopped. Users cannot send messages.');
     
   } catch (error) {
     console.error('Error locking group:', error);
@@ -558,7 +606,7 @@ bot.command('check', async (ctx) => {
   const checkMsg =
     `⚡ *Checking phase Started*\n` +
     `Drop the video proof of screen record here with AD, or only proof\n\n` +
-    `🔗 {timeline link}\n\n` +
+    `🔗 https://x.com/always_alpha007 \n\n` +
     `⏳ *Deadline:* ${hrs} hr ${mins} mins\n` +
     `🕒 *Ends At:* ${istDate} IST\n\n` +
     `📤 *SEND AD, ALL DONE, DONE WITH SR PROOF*\n`;
@@ -587,7 +635,7 @@ bot.command('check', async (ctx) => {
       });
 
       await ctx.reply("🔒 Group locked — checking time is over.");
-      await ctx.replyWithPhoto({ source: 'check.png' });
+      
 
       // -------------------------------------
       // AUTO CALL MUTEALL
@@ -684,7 +732,7 @@ bot.command('clear', async (ctx) => {
   const progressMsg = await ctx.reply('🧹 Starting to clear messages... (0 deleted)');
   
   let messagesDeleted = 0;
-  const BATCH_SIZE = 80;
+  const BATCH_SIZE = 50;
   const DELAY_BETWEEN_BATCHES = 5000; // 3 seconds
   
   try {
@@ -906,7 +954,7 @@ bot.command('srlist', async (ctx) => {
 });
 
 
-bot.command('sr', async (ctx) => {
+bot.command('ad', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -920,7 +968,7 @@ bot.command('sr', async (ctx) => {
   const targetUser = ctx.message.reply_to_message?.from;
   
   if (!targetUser) {
-    return ctx.reply('Please reply to a user\'s message to use /sr');
+    return ctx.reply('Please reply to a user\'s message to use /ad');
   }
   
   const targetUserId = targetUser.id.toString();
@@ -966,7 +1014,7 @@ bot.command('sr', async (ctx) => {
   ctx.reply(warningMsg);
 });
 
-bot.command('rm', async (ctx) => {
+bot.command('ad', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -979,7 +1027,7 @@ bot.command('rm', async (ctx) => {
   
   const args = ctx.message.text.split(' ');
   if (args.length < 2) {
-    return ctx.reply('Usage: /rm <number>');
+    return ctx.reply('Usage: /ad <number>');
   }
   
   const number = args[1];
@@ -1060,125 +1108,6 @@ bot.command('muteall', async (ctx) => {
   ctx.reply(replyMsg);
 });
 
-// =========================
-// Helper: extract target user
-// =========================
-async function getTargetUser(ctx) {
-  // Case 1 — admin replied to a user
-  if (ctx.message.reply_to_message) {
-    const u = ctx.message.reply_to_message.from;
-    return { id: u.id, username: u.username || null };
-  }
-
-  // Case 2 — admin used something like:
-  // /mute 123456789
-  // /mute @username
-  const parts = ctx.message.text.split(" ");
-  if (parts.length > 1) {
-    const target = parts[1].trim();
-
-    // If begins with @username
-    if (target.startsWith("@")) {
-      const username = target.replace("@", "");
-      try {
-        const user = await ctx.telegram.getChatMember(ctx.chat.id, username);
-        return { id: user.user.id, username };
-      } catch (err) {
-        return null;
-      }
-    }
-
-    // If number → treat as user ID
-    if (!isNaN(target)) {
-      return { id: target, username: null };
-    }
-  }
-
-  return null;
-}
-
-
-
-// =================================
-// /mute — default 60 mins or custom
-// Usage:
-// /mute 10 → mutes replied user 10 mins
-// /mute @user 30 → mutes for 30 mins
-// =================================
-bot.command('mute', async (ctx) => {
-  if (!await isAdmin(ctx, ctx.from.id)) return ctx.deleteMessage();
-
-  const target = await getTargetUser(ctx);
-  if (!target) return ctx.reply("❌ Reply to a user or provide @username/userId.");
-
-  const parts = ctx.message.text.split(" ");
-  const mins = parts[2] ? parseInt(parts[2]) : (parts[1] && !isNaN(parts[1]) ? parseInt(parts[1]) : 60);
-
-  const until = Math.floor(Date.now() / 1000) + mins * 60;
-
-  await ctx.telegram.restrictChatMember(ctx.chat.id, target.id, {
-    can_send_messages: false,
-    until_date: until
-  });
-
-  ctx.reply(`🔇 Muted [user](tg://user?id=${target.id}) for *${mins} mins*.`, { parse_mode: "Markdown" });
-});
-
-
-
-
-// =================================
-// /unmute
-// =================================
-bot.command('unmute', async (ctx) => {
-  if (!await isAdmin(ctx, ctx.from.id)) return ctx.deleteMessage();
-
-  const target = await getTargetUser(ctx);
-  if (!target) return ctx.reply("❌ Reply to a user or provide @username/userId.");
-
-  await ctx.telegram.restrictChatMember(ctx.chat.id, target.id, {
-    can_send_messages: true,
-    can_send_media_messages: true,
-    can_send_other_messages: true,
-    can_add_web_page_previews: true
-  });
-
-  ctx.reply(`🔊 Unmuted [user](tg://user?id=${target.id}).`, { parse_mode: "Markdown" });
-});
-
-
-
-
-// =================================
-// /ban
-// =================================
-bot.command('ban', async (ctx) => {
-  if (!await isAdmin(ctx, ctx.from.id)) return ctx.deleteMessage();
-
-  const target = await getTargetUser(ctx);
-  if (!target) return ctx.reply("❌ Reply to a user or provide @username/userId.");
-
-  await ctx.telegram.banChatMember(ctx.chat.id, target.id);
-
-  ctx.reply(`🚫 Banned [user](tg://user?id=${target.id}).`, { parse_mode: "Markdown" });
-});
-
-
-
-
-// =================================
-// /unban
-// =================================
-bot.command('unban', async (ctx) => {
-  if (!await isAdmin(ctx, ctx.from.id)) return ctx.deleteMessage();
-
-  const target = await getTargetUser(ctx);
-  if (!target) return ctx.reply("❌ Reply to a user or provide @username/userId.");
-
-  await ctx.telegram.unbanChatMember(ctx.chat.id, target.id);
-
-  ctx.reply(`♻️ Unbanned [user](tg://user?id=${target.id}).`, { parse_mode: "Markdown" });
-});
 
 
 bot.command('end', async (ctx) => {
@@ -1244,6 +1173,7 @@ bot.command('end', async (ctx) => {
   await saveGroupData(groupId, groupData);
   
   ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared.');
+
 });
 
 // ============= MESSAGE HANDLERS =============
@@ -1389,7 +1319,7 @@ bot.on('message', async (ctx) => {
           approved: true
         });
         
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) your SR proof has been received ✅`);
+        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Media Recieved, Marked Safe ✅`);
         await saveGroupData(groupId, groupData);
       }
     } else {
