@@ -409,7 +409,7 @@ const stopCronJobs = (groupId) => {
   }
 };
 
-// ============= BOT COMMANDS =============
+/// ============= BOT COMMANDS =============
 bot.command('slot', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -428,8 +428,8 @@ bot.command('slot', async (ctx) => {
   // Clear all data except muted users
   groupData = {
     ...getDefaultGroupData(),
-    mutedXUsernames: groupData.mutedXUsernames, // Keep muted users
-    mutedUsers: new Map() // Clear temporary mutes
+    mutedXUsernames: groupData.mutedXUsernames,
+    mutedUsers: new Map()
   };
   
   groupData.state = BOT_STATES.SLOT_OPEN;
@@ -438,8 +438,9 @@ bot.command('slot', async (ctx) => {
   // Update group title
   try {
     const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\s*\{.*\}/, '');
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} {open}`);
+    const baseTitle = currentTitle.replace(/\s*\|\|.*/, '');
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || OPEN`);
+
   } catch (error) {
     console.log('No permission to change group name');
   }
@@ -456,7 +457,11 @@ bot.command('slot', async (ctx) => {
   });
   
   await saveGroupData(groupId, groupData);
-  
+
+  // 🟢 SEND STICKER HERE
+  await ctx.replyWithSticker('AgACAgUAAxkBAAE-wfRpMRvIQhcuekoZw6iMAAHfFcJACMMAAggMaxvZcIlVVmtxWMSnNOcBAAMCAANtAAM2BA');  
+  // Replace the ID above with your OWN sticker ID
+
   const welcomeMsg = `🎰 Slot opened! Members can now drop their X links.\n\n` +
     `📌 Rules:\n` +
     `• Drop only ONE X link\n` +
@@ -470,7 +475,6 @@ bot.command('slot', async (ctx) => {
   groupData.currentPinnedMessageId = sentMessage.message_id;
   await saveGroupData(groupId, groupData);
   
-  // Start reminder cron job
   startSlotReminderJob(ctx, groupId);
 });
 
@@ -532,8 +536,9 @@ bot.command('check', async (ctx) => {
   // Update group title
   try {
     const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\s*\{.*\}/, '');
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} {checking}`);
+    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || TRACKING`);
+
   } catch (error) {
     console.log('No permission to change group name');
   }
@@ -1213,8 +1218,9 @@ bot.command('end', async (ctx) => {
   // Update group title
   try {
     const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\s*\{.*\}/, '');
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} {closed}`);
+    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || CLOSED`);
+    
   } catch (error) {
     console.log('No permission to change group name');
   }
@@ -1247,7 +1253,7 @@ bot.command('end', async (ctx) => {
   
   await saveGroupData(groupId, groupData);
   
-  ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared. Muted users data preserved in database.');
+  ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared.');
 });
 
 // ============= MESSAGE HANDLERS =============
