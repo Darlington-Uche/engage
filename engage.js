@@ -523,12 +523,7 @@ bot.command('loc', async (ctx) => {
   try {
 
     // 🔥 LOCK THE GROUP FOR EVERYONE EXCEPT ADMINS
-    await ctx.telegram.setChatPermissions(groupId, {
-      can_send_messages: false,
-      can_send_media_messages: false,
-      can_send_polls: false,
-      can_send_other_messages: false,
-      can_add_web_page_previews: false
+    await ctx.telegram.setChatPermissions(ctx.chat.id, {
     });
 
     // Save lock state
