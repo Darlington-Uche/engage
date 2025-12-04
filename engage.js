@@ -38,12 +38,6 @@ app.listen(PORT, async () => {
 });
 
 
-// Initialize Firebase Admin
-const serviceAccount = require('./data.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-const db = admin.firestore();
 
 const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 
