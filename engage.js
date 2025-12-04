@@ -521,9 +521,17 @@ bot.command('loc', async (ctx) => {
   }
 
   try {
-
     // 🔥 LOCK THE GROUP FOR EVERYONE EXCEPT ADMINS
+    // Set ALL permissions to false to completely restrict
     await ctx.telegram.setChatPermissions(ctx.chat.id, {
+      can_send_messages: false,
+      can_send_media_messages: false,
+      can_send_polls: false,
+      can_send_other_messages: false,
+      can_add_web_page_previews: false,
+      can_change_info: false,
+      can_invite_users: false,
+      can_pin_messages: false
     });
 
     // Save lock state
@@ -533,6 +541,26 @@ bot.command('loc', async (ctx) => {
     // Stop cron jobs
     stopCronJobs(groupId);
 
+    // Update group title to show locked status
+    try {
+      const currentTitle = ctx.chat.title;
+      const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+      await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || LOCKED`);
+    } catch (error) {
+      console.log('No permission to change group name:', error);
+    }
+
+    // Unpin any existing pinned message
+    if (groupData.currentPinnedMessageId) {
+      try {
+        await ctx.telegram.unpinChatMessage(groupId, groupData.currentPinnedMessageId);
+        groupData.currentPinnedMessageId = null;
+        await saveGroupData(groupId, groupData);
+      } catch (error) {
+        console.log('Could not unpin previous message:', error);
+      }
+    }
+
     await ctx.reply('🔒 Group locked. Only admins can send messages.');
     await ctx.replyWithPhoto({ source: 'check.png' });
 
@@ -541,7 +569,6 @@ bot.command('loc', async (ctx) => {
     await ctx.reply('❌ Failed to lock group. Make sure the bot is an admin with full rights.');
   }
 });
-
 
 bot.command('check', async (ctx) => {
   const groupId = ctx.chat.id;
