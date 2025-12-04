@@ -3,8 +3,8 @@ const cron = require('node-cron');
 const db = require('./firebase.js');
 const express = require('express');
 require('dotenv').config();
-const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 const app = express();
+const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
 
 // Use webhook instead of polling
 const WEBHOOK_DOMAIN = 'https://engage-sobe.onrender.com';
@@ -23,7 +23,7 @@ app.get('/', (req, res) => {
 // Set webhook on startup
 async function setWebhook() {
   try {
-    await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
+    await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${EBHOOK_PATH}`);
     console.log('Webhook set successfully');
   } catch (error) {
     console.error('Error setting webhook:', error);
@@ -36,9 +36,6 @@ app.listen(PORT, async () => {
   await setWebhook();
   console.log('Bot started successfully with webhooks');
 });
-
-
-
 
 
 // ============= CONSTANTS & CONFIGURATION =============
