@@ -1169,6 +1169,438 @@ bot.command('muteall', async (ctx) => {
   ctx.reply(replyMsg);
 });
 
+// ============= MUTE COMMAND WITH DURATION =============
+bot.command('mute', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  const args = ctx.message.text.split(' ');
+  
+  if (args.length < 2) {
+    return ctx.reply('Usage: /mute [duration] [reason]\n\nExamples:\n/mute 30 - Mute for 30 minutes\n/mute 2h - Mute for 2 hours\n/mute 1d - Mute for 1 day\n/mute @username 30\n/mute 30 Spamming\n\nReply to a user or mention username/ID');
+  }
+  
+  let targetUser = null;
+  let durationStr = '';
+  let reason = '';
+  
+  // Try to get target user from reply
+  if (ctx.message.reply_to_message) {
+    targetUser = ctx.message.reply_to_message.from;
+    
+    // Parse duration from arguments (skip command name)
+    if (args.length >= 2) {
+      durationStr = args[1];
+      reason = args.slice(2).join(' ');
+    }
+  } else {
+    // Try to parse from arguments
+    const mentionMatch = args[1].match(/^@(\w+)$/) || args[1].match(/^(\d+)$/);
+    
+    if (mentionMatch && args.length >= 3) {
+      // Format: /mute @username duration reason or /mute 123456 duration reason
+      try {
+        const chatMember = await ctx.telegram.getChatMember(groupId, mentionMatch[1]);
+        targetUser = chatMember.user;
+        durationStr = args[2];
+        reason = args.slice(3).join(' ');
+      } catch (error) {
+        return ctx.reply('❌ User not found in this group.');
+      }
+    } else {
+      // Format: /mute duration reason (target is first argument if it's a duration)
+      if (/^\d+[mhd]?$/.test(args[1])) {
+        durationStr = args[1];
+        reason = args.slice(2).join(' ');
+        
+        // Check if first arg after command is a user mention
+        if (args[2] && (args[2].startsWith('@') || /^\d+$/.test(args[2]))) {
+          try {
+            const identifier = args[2].replace('@', '');
+            const chatMember = await ctx.telegram.getChatMember(groupId, identifier);
+            targetUser = chatMember.user;
+            durationStr = args[1];
+            reason = args.slice(3).join(' ');
+          } catch (error) {
+            // If can't find user, use current message's target
+          }
+        }
+      }
+    }
+  }
+  
+  // If still no target user, try to get from entities
+  if (!targetUser) {
+    targetUser = await getTargetUser(ctx);
+  }
+  
+  if (!targetUser) {
+    return ctx.reply('❌ Please reply to a user, mention @username, or provide user ID.\n\nUsage: /mute [duration] [reason]');
+  }
+  
+  // Check if trying to mute admin
+  if (await isAdmin(ctx, targetUser.id)) {
+    return ctx.reply('❌ Cannot mute an administrator.');
+  }
+  
+  // Parse duration
+  let durationMinutes = 30; // Default 30 minutes
+  
+  if (durationStr) {
+    if (durationStr.endsWith('h')) {
+      const hours = parseInt(durationStr);
+      durationMinutes = hours * 60;
+    } else if (durationStr.endsWith('d')) {
+      const days = parseInt(durationStr);
+      durationMinutes = days * 24 * 60;
+    } else if (durationStr.endsWith('m')) {
+      durationMinutes = parseInt(durationStr);
+    } else {
+      durationMinutes = parseInt(durationStr) || 30;
+    }
+  }
+  
+  // Maximum mute duration (30 days)
+  const MAX_DURATION = 30 * 24 * 60; // 30 days in minutes
+  if (durationMinutes > MAX_DURATION) {
+    durationMinutes = MAX_DURATION;
+  }
+  
+  // Get group data
+  let groupData = await getGroupData(groupId);
+  
+  // Mute the user
+  const success = await muteUser(ctx, groupData, targetUser.id, null, durationMinutes);
+  
+  if (success) {
+    const durationText = getDurationText(durationMinutes);
+    const userName = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
+    
+    let message = `🔇 ${userName} has been muted for ${durationText}`;
+    if (reason) {
+      message += `\n📝 Reason: ${reason}`;
+    }
+    message += `\n👤 Muted by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`;
+    
+    await ctx.reply(message);
+    await saveGroupData(groupId, groupData);
+  } else {
+    await ctx.reply('❌ Failed to mute user. I might not have enough permissions.');
+  }
+});
+
+// ============= UNMUTE COMMAND =============
+bot.command('unmute', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  let targetUser = null;
+  
+  // Try to get target user from reply
+  if (ctx.message.reply_to_message) {
+    targetUser = ctx.message.reply_to_message.from;
+  } else {
+    // Try to get from arguments or entities
+    targetUser = await getTargetUser(ctx);
+  }
+  
+  if (!targetUser) {
+    return ctx.reply('❌ Please reply to a user, mention @username, or provide user ID.\n\nUsage: /unmute @username');
+  }
+  
+  try {
+    // Restore user permissions
+    await ctx.restrictChatMember(targetUser.id, {
+      permissions: {
+        can_send_messages: true,
+        can_send_media_messages: true,
+        can_send_polls: true,
+        can_send_other_messages: true,
+        can_add_web_page_previews: true,
+        can_change_info: false,
+        can_invite_users: false,
+        can_pin_messages: false
+      },
+      until_date: 0
+    });
+    
+    // Remove from muted lists
+    let groupData = await getGroupData(groupId);
+    groupData.mutedUsers.delete(targetUser.id.toString());
+    
+    // Remove from muted X usernames if exists
+    for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
+      if (muteData.tgUserId === targetUser.id) {
+        groupData.mutedXUsernames.delete(xUsername);
+      }
+    }
+    
+    await saveGroupData(groupId, groupData);
+    
+    const userName = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
+    await ctx.reply(`🔊 ${userName} has been unmuted.\n👤 Unmuted by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`);
+    
+  } catch (error) {
+    console.error('Error unmuting user:', error);
+    await ctx.reply('❌ Failed to unmute user. I might not have enough permissions.');
+  }
+});
+
+// ============= BAN COMMAND =============
+bot.command('ban', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  const args = ctx.message.text.split(' ');
+  let targetUser = null;
+  let reason = '';
+  
+  // Try to get target user from reply
+  if (ctx.message.reply_to_message) {
+    targetUser = ctx.message.reply_to_message.from;
+    reason = args.slice(1).join(' ');
+  } else {
+    // Try to get from arguments or entities
+    targetUser = await getTargetUser(ctx);
+    if (targetUser) {
+      reason = args.slice(2).join(' ');
+    }
+  }
+  
+  if (!targetUser) {
+    return ctx.reply('❌ Please reply to a user, mention @username, or provide user ID.\n\nUsage: /ban [reason]');
+  }
+  
+  // Check if trying to ban admin
+  if (await isAdmin(ctx, targetUser.id)) {
+    return ctx.reply('❌ Cannot ban an administrator.');
+  }
+  
+  try {
+    // Ban the user
+    await ctx.banChatMember(targetUser.id);
+    
+    const userName = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
+    
+    let message = `🚫 ${userName} has been banned from the group`;
+    if (reason) {
+      message += `\n📝 Reason: ${reason}`;
+    }
+    message += `\n👤 Banned by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`;
+    
+    await ctx.reply(message);
+    
+    // Delete user's messages if possible
+    try {
+      if (ctx.message.reply_to_message) {
+        await ctx.deleteMessage(ctx.message.reply_to_message.message_id);
+      }
+    } catch (error) {
+      console.log('Could not delete user message:', error);
+    }
+    
+  } catch (error) {
+    console.error('Error banning user:', error);
+    await ctx.reply('❌ Failed to ban user. I might not have enough permissions.');
+  }
+});
+
+// ============= UNBAN COMMAND =============
+bot.command('unban', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  let targetUser = null;
+  
+  // Try to get target user from arguments
+  const args = ctx.message.text.split(' ');
+  
+  if (args.length < 2) {
+    return ctx.reply('❌ Please provide username or user ID to unban.\n\nUsage: /unban @username or /unban 123456');
+  }
+  
+  const identifier = args[1].replace('@', '');
+  
+  try {
+    // Try to unban by user ID
+    await ctx.unbanChatMember(identifier);
+    
+    const userName = args[1].startsWith('@') ? args[1] : `User ID: ${identifier}`;
+    await ctx.reply(`✅ ${userName} has been unbanned.\n👤 Unbanned by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`);
+    
+  } catch (error) {
+    console.error('Error unbanning user:', error);
+    
+    // Try alternative approach - get user from message
+    if (ctx.message.reply_to_message && ctx.message.reply_to_message.from) {
+      try {
+        await ctx.unbanChatMember(ctx.message.reply_to_message.from.id);
+        const userName = ctx.message.reply_to_message.from.username ? 
+          `@${ctx.message.reply_to_message.from.username}` : 
+          ctx.message.reply_to_message.from.first_name;
+        await ctx.reply(`✅ ${userName} has been unbanned.\n👤 Unbanned by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`);
+      } catch (error2) {
+        await ctx.reply('❌ Failed to unban user. User might not be banned or I lack permissions.');
+      }
+    } else {
+      await ctx.reply('❌ Failed to unban user. User might not be banned or I lack permissions.');
+    }
+  }
+});
+
+// ============= MUTE LIST COMMAND =============
+bot.command('mutelist', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  let groupData = await getGroupData(groupId);
+  
+  if (groupData.mutedUsers.size === 0 && groupData.mutedXUsernames.size === 0) {
+    return ctx.reply('📋 No users are currently muted.');
+  }
+  
+  let muteList = '🔇 *CURRENTLY MUTED USERS*\n━━━━━━━━━━━━━━━━━━\n\n';
+  let counter = 1;
+  
+  // List temporarily muted users
+  if (groupData.mutedUsers.size > 0) {
+    muteList += '*Temporary Mutes:*\n';
+    const now = Math.floor(Date.now() / 1000);
+    
+    for (const [uid, muteData] of groupData.mutedUsers.entries()) {
+      const remaining = muteData.until - now;
+      if (remaining > 0) {
+        const hours = Math.floor(remaining / 3600);
+        const minutes = Math.floor((remaining % 3600) / 60);
+        
+        const remainingText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+        muteList += `${counter}. ${muteData.tgUsername || 'User'} - ${remainingText} remaining\n`;
+        counter++;
+      }
+    }
+  }
+  
+  // List X username mutes
+  if (groupData.mutedXUsernames.size > 0) {
+    muteList += '\n*X Username Mutes:*\n';
+    const now = new Date();
+    const twoDaysAgo = new Date(now.getTime() - (2 * 24 * 60 * 60 * 1000));
+    
+    for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
+      const muteDate = new Date(muteData.mutedAt);
+      if (muteDate > twoDaysAgo) {
+        const hoursAgo = Math.floor((now - muteDate) / (1000 * 60 * 60));
+        muteList += `${counter}. X: @${xUsername} - ${muteData.tgUsername || 'Unknown'} (${hoursAgo}h ago)\n`;
+        counter++;
+      }
+    }
+  }
+  
+  muteList += `\n━━━━━━━━━━━━━━━━━━\n📊 Total: ${counter - 1} muted entries`;
+  
+  await ctx.reply(muteList, { parse_mode: "Markdown" });
+});
+
+// ============= HELPER FUNCTIONS =============
+
+// Helper function to format duration text
+function getDurationText(minutes) {
+  if (minutes < 60) {
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+  } else if (minutes < 24 * 60) {
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes === 0) {
+      return `${hours} hour${hours !== 1 ? 's' : ''}`;
+    }
+    return `${hours} hour${hours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
+  } else {
+    const days = Math.floor(minutes / (24 * 60));
+    const remainingHours = Math.floor((minutes % (24 * 60)) / 60);
+    if (remainingHours === 0) {
+      return `${days} day${days !== 1 ? 's' : ''}`;
+    }
+    return `${days} day${days !== 1 ? 's' : ''} ${remainingHours} hour${remainingHours !== 1 ? 's' : ''}`;
+  }
+}
+
+// Enhanced getTargetUser function (update your existing one)
+async function getTargetUser(ctx) {
+  const msg = ctx.message;
+  
+  // 1️⃣ If replying to a user
+  if (msg.reply_to_message) {
+    return msg.reply_to_message.from;
+  }
+  
+  // 2️⃣ If user mentioned by username like @abc
+  if (msg.entities) {
+    for (let e of msg.entities) {
+      if (e.type === "mention") {
+        const username = msg.text.substring(e.offset + 1, e.offset + e.length); // remove @
+        try {
+          const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, username);
+          return chatMember.user;
+        } catch (err) {
+          console.error('Error getting chat member by mention:', err);
+        }
+      } else if (e.type === "text_mention") {
+        return e.user;
+      }
+    }
+  }
+  
+  // 3️⃣ If user ID or text name after command
+  const parts = msg.text.split(" ");
+  if (parts[1]) {
+    const id = parts[1].replace("@", "");
+    
+    // Check if it's a numeric ID
+    if (/^\d+$/.test(id)) {
+      try {
+        const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, parseInt(id));
+        return chatMember.user;
+      } catch (err) {
+        console.error('Error getting chat member by ID:', err);
+      }
+    } else {
+      // Try as username
+      try {
+        const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, id);
+        return chatMember.user;
+      } catch (err) {
+        console.error('Error getting chat member by username:', err);
+      }
+    }
+  }
+  
+  return null;
+}
 
 
 bot.command('end', async (ctx) => {
