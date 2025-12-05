@@ -596,7 +596,7 @@ bot.command('check', async (ctx) => {
   let groupData = await getGroupData(groupId);
 
   if (groupData.state !== BOT_STATES.SLOT_OPEN) {
-    return ctx.reply('No active slot session. Use /slot first.');
+    return ctx.reply('No active slot session. Use /open first.');
   }
 
   groupData.state = BOT_STATES.CHECKING;
@@ -616,7 +616,7 @@ bot.command('check', async (ctx) => {
   await ctx.telegram.setChatPermissions(ctx.chat.id, {
     can_send_messages: false,
     can_send_videos: true,
-    can_send_photos: false
+    can_send_photos: true
   });
 
   await saveGroupData(groupId, groupData);
@@ -746,7 +746,6 @@ bot.command('stats', async (ctx) => {
   await ctx.reply(statsMessage, { parse_mode: "Markdown" });
 });
 
-// ============= NEW COMMAND: /list =============
 bot.command('list', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -762,7 +761,7 @@ bot.command('list', async (ctx) => {
     return ctx.reply('No users have submitted links yet.');
   }
 
-  let userList = '📋 PARTICIPATION LISTS:\n\n';
+  let userList = '<b>📋 PARTICIPATION LISTS:</b>\n\n';
   let counter = 1;
 
   // Sort newest → oldest
@@ -771,28 +770,33 @@ bot.command('list', async (ctx) => {
 
   for (const [uid, userData] of sortedUsers) {
     const displayName = userData.tgName || userData.tgUsername || "Unknown";
-    const xUsername = userData.xUsername || 'N/A';
-
-    // Tag WITHOUT @username → using tg://user?id=
-    const mention = `[${displayName}](tg://user?id=${uid})`;
+    const xUsername = (userData.xUsername || 'N/A').trim();
+    
+    // HTML escape for display name
+    const escapedDisplayName = displayName
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    
+    // Use HTML link format
+    const mention = `<a href="tg://user?id=${uid}">${escapedDisplayName}</a>`;
 
     userList += `${counter}. ${mention} | xid: @${xUsername}\n`;
     counter++;
   }
 
-  userList += `\n📊 Total: ${groupData.userLinks.size} users`;
+  userList += `\n<b>📊 Total:</b> ${groupData.userLinks.size} users`;
 
   // Split long messages
   if (userList.length > 4000) {
     const chunks = userList.match(/[\s\S]{1,4000}/g) || [];
     for (const chunk of chunks) {
-      await ctx.reply(chunk, { parse_mode: "Markdown" });
+      await ctx.reply(chunk, { parse_mode: "HTML" });
     }
   } else {
-    ctx.reply(userList, { parse_mode: "Markdown" });
+    ctx.reply(userList, { parse_mode: "HTML" });
   }
 });
-
 // ============= NEW COMMAND: /clear =============
 bot.command('clear', async (ctx) => {
   const groupId = ctx.chat.id;
@@ -1031,7 +1035,7 @@ bot.command('srlist', async (ctx) => {
 });
 
 
-bot.command('ad', async (ctx) => {
+bot.command('sr', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1045,7 +1049,7 @@ bot.command('ad', async (ctx) => {
   const targetUser = ctx.message.reply_to_message?.from;
   
   if (!targetUser) {
-    return ctx.reply('Please reply to a user\'s message to use /ad');
+    return ctx.reply('Please reply to a user\'s message to use /sr');
   }
   
   const targetUserId = targetUser.id.toString();
@@ -2654,7 +2658,7 @@ bot.on('message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.message.text && ctx.message.text.startsWith('/')) return;
   if (ctx.from.id === ctx.botInfo.id) return;
-  
+
   const groupId = ctx.chat.id;
   const userId = ctx.from.id.toString();
   let groupData = await getGroupData(groupId);
