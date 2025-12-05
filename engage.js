@@ -884,6 +884,7 @@ bot.command('clear', async (ctx) => {
         s: ${error.message}`);
   }
 });
+
 bot.command('link', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -915,13 +916,12 @@ bot.command('link', async (ctx) => {
     return ctx.reply("❌ This user did NOT submit any X link during the slot phase.");
   }
 
-  // Show stored link
+  // Show stored link - use HTML formatting which handles underscores properly
   return ctx.reply(
-    `🔗 *User's submitted link:*\n${linkData.link}`,
-    { parse_mode: "Markdown" }
+    `<b>🔗 User's submitted link:</b>\n<code>${linkData.link}</code>`,
+    { parse_mode: "HTML" }
   );
 });
-
 
 bot.command('safe', async (ctx) => {
   const groupId = ctx.chat.id;
