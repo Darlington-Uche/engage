@@ -2748,8 +2748,11 @@ bot.on('message', async (ctx) => {
       await saveGroupData(groupId, groupData);
       
     } else {
-      // Not an X link, delete it
+      // Not an X link, delete it and mute user for 5 minutes
       await ctx.deleteMessage();
+      await muteUser(ctx, groupData, userId, null, 5);
+      await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 5 minutes - only X links allowed during slot phase.`);
+      await saveGroupData(groupId, groupData);
     }
   }
   
