@@ -685,6 +685,7 @@ bot.command('total', async (ctx) => {
   
   ctx.reply(`📊 Total X links dropped: ${groupData.linkCount}`);
 });
+
 bot.command('stats', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -728,6 +729,7 @@ bot.command('stats', async (ctx) => {
 
   await ctx.reply(statsMessage, { parse_mode: "Markdown" });
 });
+
 // ============= NEW COMMAND: /list =============
 bot.command('list', async (ctx) => {
   const groupId = ctx.chat.id;
