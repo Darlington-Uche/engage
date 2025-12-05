@@ -2653,6 +2653,7 @@ bot.command('end', async (ctx) => {
 bot.on('message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.message.text && ctx.message.text.startsWith('/')) return;
+  if (ctx.from.id === ctx.botInfo.id) return;
   
   const groupId = ctx.chat.id;
   const userId = ctx.from.id.toString();
