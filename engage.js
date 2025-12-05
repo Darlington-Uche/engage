@@ -635,15 +635,16 @@ bot.command('check', async (ctx) => {
   const hrs = Math.floor(minsLeft / 60);
   const mins = minsLeft % 60;
 
-  const checkMsg =
-    `⚡ *Checking phase Started*\n` +
-    `Drop the video proof of screen record here with AD, or only proof\n\n` +
-    `🔗 https://x.com/always_alpha007 \n\n` +
-    `⏳ *Deadline:* ${hrs} hr ${mins} mins\n` +
-    `🕒 *Ends At:* ${istDate} IST\n\n` +
-    `📤 *SEND AD, ALL DONE, DONE WITH SR PROOF*\n`;
+const checkMsg =
+  `<b>⚡ Checking phase Started</b>\n` +
+  `Drop the video proof of screen record here with AD, or only proof\n\n` +
+  `🔗 https://x.com/always_alpha007 \n\n` +
+  `⏳ <b>Deadline:</b> ${hrs} hr ${mins} mins\n` +
+  `🕒 <b>Ends At:</b> ${istDate} IST\n\n` +
+  `📤 <b>SEND AD, ALL DONE, DONE WITH SR PROOF</b>\n`;
 
-  const sentMessage = await ctx.reply(checkMsg, { parse_mode: "Markdown" });
+// Then change the reply to use HTML:
+const sentMessage = await ctx.reply(checkMsg, { parse_mode: "HTML" });
   await ctx.pinChatMessage(sentMessage.message_id);
 
   groupData.currentPinnedMessageId = sentMessage.message_id;
