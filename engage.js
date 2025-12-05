@@ -576,7 +576,7 @@ bot.command('loc', async (ctx) => {
       }
     }
 
-    await ctx.reply('🔒 Group locked. Only admins can send messages.');
+    await ctx.reply('🔒 Group locked.\n Timeline is getting updated..\n Only Admins can send messages.');
     await ctx.replyWithPhoto({ source: 'close.png' });
 
   } catch (error) {
@@ -2357,6 +2357,189 @@ bot.command('xunban', async (ctx) => {
     await saveGroupData(groupId, groupData);
     
     await ctx.reply(`✅ X username @${xUsername} has been removed from the blocked list, but user might not be in the group or already unbanned.\n\nError: ${error.message}`);
+  }
+});
+
+// ============= REQUEST COMMAND (Simplified) =============
+bot.command('request', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id.toString();
+  
+  // Get group data
+  let groupData = await getGroupData(groupId);
+  
+  // Only works during CHECKING phase
+  if (groupData.state !== BOT_STATES.CHECKING) {
+    await ctx.deleteMessage();
+    await ctx.reply("❌ Request command only works during checking phase.");
+    return;
+  }
+  
+  // Check if user participated in the slot
+  if (!groupData.userLinks.has(userId)) {
+    await ctx.deleteMessage();
+    await ctx.reply("❌ You need to have participated in the slot to use this command.");
+    return;
+  }
+  
+  const args = ctx.message.text.split(' ');
+  const message = args.slice(1).join(' ');
+  
+  // Check if message is provided
+  if (!message && !ctx.message.photo && !ctx.message.document) {
+    await ctx.deleteMessage();
+    const helpMsg = `📝 *How to use /request*\n\n` +
+                   `Send your request with a message or image:\n` +
+                   `• /request Need help with proof\n` +
+                   `• /request I have an issue\n` +
+                   `• /request Can't upload video\n\n` +
+                   `You can also attach an image or document with your request.`;
+    await ctx.reply(helpMsg, { parse_mode: "Markdown" });
+    return;
+  }
+  
+  try {
+    // Get all admins in the group
+    const admins = await ctx.getChatAdministrators();
+    
+    // Get user info
+    const userLinkData = groupData.userLinks.get(userId);
+    const xUsername = userLinkData ? userData.xUsername : 'N/A';
+    const tgUsername = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+    const userFirstName = ctx.from.first_name || 'User';
+    
+    // Prepare request message for admins
+    const requestMessage = `📩 *NEW REQUEST FROM USER*\n\n` +
+                          `👤 *User:* ${tgUsername}\n` +
+                          `🆔 *User ID:* \`${userId}\`\n` +
+                          `🐦 *X Username:* @${xUsername}\n` +
+                          `📝 *Message:* ${message || "No message provided"}\n` +
+                          `📅 *Time:* ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}\n` +
+                          `🏷️ *Group:* ${ctx.chat.title}`;
+    
+    // Send to each admin in their DMs
+    let sentCount = 0;
+    let failedCount = 0;
+    
+    for (const admin of admins) {
+      // Skip bots
+      if (admin.user.is_bot) continue;
+      
+      const adminId = admin.user.id;
+      
+      try {
+        // Start with text message
+        await ctx.telegram.sendMessage(adminId, requestMessage, { parse_mode: "Markdown" });
+        
+        // If there's a photo, forward it
+        if (ctx.message.photo) {
+          const photo = ctx.message.photo[ctx.message.photo.length - 1]; // Get highest quality
+          await ctx.telegram.sendPhoto(adminId, photo.file_id, {
+            caption: `📸 Attachment from ${tgUsername}`,
+            parse_mode: "Markdown"
+          });
+        }
+        
+        // If there's a document, forward it
+        if (ctx.message.document) {
+          await ctx.telegram.sendDocument(adminId, ctx.message.document.file_id, {
+            caption: `📎 Document from ${tgUsername}`,
+            parse_mode: "Markdown"
+          });
+        }
+        
+        sentCount++;
+        
+      } catch (error) {
+        // If admin hasn't started chat with bot, we can't send DM
+        console.error(`Failed to send request to admin ${adminId}:`, error.message);
+        failedCount++;
+      }
+    }
+    
+    // Delete user's request message from group
+    await ctx.deleteMessage();
+    
+    // Send confirmation to user
+    const confirmationMsg = `✅ *Your request has been sent!*\n\n` +
+                          `📤 Sent to ${sentCount} admin${sentCount !== 1 ? 's' : ''}\n` +
+                          `⏳ Admin will accept your request soon\n` +
+                          `⏰ Kindly wait a few seconds\n` +
+                          `🙏 Thank you for your patience`;
+    
+    const userConfirmation = await ctx.reply(confirmationMsg, { parse_mode: "Markdown" });
+    
+    // Auto-delete confirmation after 10 seconds
+    setTimeout(async () => {
+      try {
+        await ctx.deleteMessage(userConfirmation.message_id);
+      } catch (error) {
+        console.log('Could not delete confirmation message:', error);
+      }
+    }, 10000);
+    
+    // Log request summary
+    console.log(`Request from ${tgUsername}: Sent to ${sentCount} admins, ${failedCount} failed`);
+    
+  } catch (error) {
+    console.error('Error processing request:', error);
+    await ctx.reply("❌ Sorry, there was an error processing your request. Please try again.");
+  }
+});
+
+// ============= REQUEST HELP COMMAND =============
+bot.command('requesthelp', async (ctx) => {
+  const helpMsg = `📝 *REQUEST SYSTEM HELP*\n\n` +
+                 `*How to use /request:*\n` +
+                 `• Use during checking phase only\n` +
+                 `• Must have participated in the slot\n` +
+                 `• Add a message explaining your issue\n` +
+                 `• You can attach images/documents\n\n` +
+                 `*Examples:*\n` +
+                 `/request Need help uploading proof\n` +
+                 `/request Can't find my X link\n` +
+                 `/request Technical issue with video\n\n` +
+                 `*What happens:*\n` +
+                 `1. Your request is sent to all admins\n` +
+                 `2. Your message is deleted from group\n` +
+                 `3. Admin will respond to you soon\n` +
+                 `4. Please wait patiently for response`;
+  
+  await ctx.reply(helpMsg, { parse_mode: "Markdown" });
+});
+
+// ============= REQUESTSTATS COMMAND (For admins) =============
+bot.command('requeststats', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  try {
+    // Get today's date
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Get all admins
+    const admins = await ctx.getChatAdministrators();
+    const adminCount = admins.filter(a => !a.user.is_bot).length;
+    
+    const statsMsg = `📊 *REQUEST SYSTEM STATS*\n━━━━━━━━━━━━━━━━━━\n\n` +
+                    `👥 *Total Admins:* ${adminCount}\n` +
+                    `🏷️ *Group:* ${ctx.chat.title}\n` +
+                    `📅 *Today's Date:* ${now.toLocaleDateString("en-IN")}\n` +
+                    `⏰ *Current Time:* ${now.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })}\n\n` +
+                    `ℹ️ *Note:* Requests are sent to all admins via DM.\n` +
+                    `Users must wait for admin response.`;
+    
+    await ctx.reply(statsMsg, { parse_mode: "Markdown" });
+    
+  } catch (error) {
+    console.error('Error in requeststats:', error);
+    await ctx.reply('❌ Error fetching statistics.');
   }
 });
 
