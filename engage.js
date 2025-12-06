@@ -797,6 +797,7 @@ bot.command('list', async (ctx) => {
     ctx.reply(userList, { parse_mode: "HTML" });
   }
 });
+
 // ============= NEW COMMAND: /clear =============
 bot.command('clear', async (ctx) => {
   const groupId = ctx.chat.id;
@@ -2780,10 +2781,10 @@ bot.on('message', async (ctx) => {
       }
     }
     
-    const hasMedia = ctx.message.photo || ctx.message.video || 
-                    ctx.message.document || ctx.message.video_note;
+    // Check if it's a VIDEO
+    const hasVideo = ctx.message.video || ctx.message.video_note;
     
-    if (hasMedia) {
+    if (hasVideo) {
       const linkData = groupData.userLinks.get(userId);
       const xUsername = linkData ? linkData.xUsername : 'N/A';
       const userDisplayName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
@@ -2791,7 +2792,7 @@ bot.on('message', async (ctx) => {
       if (isInSRList) {
         await ctx.reply(`${userDisplayName} (X: @${xUsername}) submitted new proof. SR list (#${srNumber}) - wait for admin approval`);
       } else {
-        // Add to safe users
+        // Add to safe users (only for videos)
         groupData.safeUsers.set(userId, {
           tgUsername: ctx.from.username || ctx.from.first_name,
           tgUserId: userId,
@@ -2800,16 +2801,19 @@ bot.on('message', async (ctx) => {
           approved: true
         });
         
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Media Recieved, Marked Safe ✅`);
+        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅`);
         await saveGroupData(groupId, groupData);
       }
     } else {
-      // Not media, delete message
-      await ctx.deleteMessage();
+      // Not a video (could be photo, document, text, etc.), delete text messages but keep media
+      if (ctx.message.text) {
+        // Delete text messages
+        await ctx.deleteMessage();
+      }
+      // Photos and other media are ignored (not deleted, not added to safe list)
     }
   }
-});
-
+  });
 // ============= ERROR HANDLING =============
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err);
