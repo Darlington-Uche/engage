@@ -4,7 +4,7 @@ const db = require('./firebase.js');
 const express = require('express');
 require('dotenv').config();
 const app = express();
-const bot = new Telegraf("8500910728:AAHaRCPCOnaWR0g82pFamKIjKdq9Rq50Fl4");
+const bot = new Telegraf("8506824449:AAERKazx1gTslD2MCRZXEIxQLMuribqtTQw");
 
 // Use webhook instead of polling
 const WEBHOOK_DOMAIN = 'https://engage-sobe.onrender.com';
