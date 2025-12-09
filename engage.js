@@ -1,41 +1,11 @@
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase.js');
-const express = require('express');
 require('dotenv').config();
 const app = express();
 const bot = new Telegraf("8506824449:AAERKazx1gTslD2MCRZXEIxQLMuribqtTQw");
 
-// Use webhook instead of polling
-const WEBHOOK_DOMAIN = 'https://engage-sobe.onrender.com';
-const WEBHOOK_PATH = '/webhook';
-const PORT = process.env.PORT || 3000;
 
-// Configure webhook
-app.use(express.json());
-app.use(bot.webhookCallback(WEBHOOK_PATH));
-
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.send('Bot is running!');
-});
-
-// Set webhook on startup
-async function setWebhook() {
-  try {
-    await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${EBHOOK_PATH}`);
-    console.log('Webhook set successfully');
-  } catch (error) {
-    console.error('Error setting webhook:', error);
-  }
-}
-
-// Start server and set webhook
-app.listen(PORT, async () => {
-  console.log(`Server running on port ${PORT}`);
-  await setWebhook();
-  console.log('Bot started successfully with webhooks');
-});
 
 
 // ============= CONSTANTS & CONFIGURATION =============
@@ -2814,6 +2784,12 @@ bot.on('message', async (ctx) => {
     }
   }
   });
+
+  // Launch bot in polling mode
+bot.launch()
+  .then(() => console.log("Bot started successfully in polling mode"))
+  .catch(err => console.error("Error launching bot:", err));
+
 // ============= ERROR HANDLING =============
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err);
