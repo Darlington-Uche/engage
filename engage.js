@@ -1219,9 +1219,19 @@ bot.command('scam', requireAllowedGroup, async (ctx) => {
   
   const scamUsers = new Map();
   
+  // Helper function to check if a user is in SR list
+  const isUserInSrList = (userId) => {
+    for (const [number, data] of groupData.srList.entries()) {
+      if (data.userId === userId) {
+        return true;
+      }
+    }
+    return false;
+  };
+  
   // Find users who dropped links but not in safe or SR lists
   for (const [uid, linkData] of groupData.userLinks.entries()) {
-    if (!groupData.safeUsers.has(uid) && !groupData.srList.has(uid)) {
+    if (!groupData.safeUsers.has(uid) && !isUserInSrList(uid)) {
       scamUsers.set(uid, linkData);
     }
   }
@@ -1375,6 +1385,7 @@ bot.command('ad', requireAllowedGroup, async (ctx) => {
                      ctx.message.reply_to_message?.document;
     
     if (hasMedia) {
+      // Add to safe list
       const linkData = groupData.userLinks.get(removedUserId);
       groupData.safeUsers.set(removedUserId, {
         tgUsername: removedUser.tgUsername,
@@ -1382,6 +1393,11 @@ bot.command('ad', requireAllowedGroup, async (ctx) => {
         approved: true,
         xUsername: linkData ? linkData.xUsername : null
       });
+      
+      // Remove from scam list if they were there
+      if (groupData.scamUsers && groupData.scamUsers.has(removedUserId)) {
+        groupData.scamUsers.delete(removedUserId);
+      }
       
       await ctx.reply(`✅ Removed user ${number} from SR list and added to safe list.`);
     } else {
@@ -1420,6 +1436,19 @@ bot.command('muteall', requireAllowedGroup, async (ctx) => {
   
   // Mute SR list users
   for (const [number, data] of groupData.srList.entries()) {
+    // Double-check the user is still in the SR list (in case of data inconsistencies)
+    let found = false;
+    for (const [num, d] of groupData.srList.entries()) {
+      if (d.userId === data.userId) {
+        found = true;
+        break;
+      }
+    }
+    
+    if (!found) {
+      continue; // Skip if user is not actually in SR list
+    }
+    
     const linkData = groupData.userLinks.get(data.userId);
     const xUsername = linkData ? linkData.xUsername : null;
     const success = await muteUser(ctx, groupData, data.userId, xUsername, 2 * 24 * 60);
