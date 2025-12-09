@@ -13,6 +13,7 @@ const BOT_STATES = {
   LOCKED: 'locked'
 };
 
+
 const cronJobs = new Map();
 const groupDataCache = new Map();
 const PIN_INTERVAL = 10; // minutes
@@ -2781,15 +2782,12 @@ bot.on('message', async (ctx) => {
   }
   });
 
-  // Launch bot in polling mode
-bot.launch()
-  .then(() => console.log("Bot started successfully in polling mode"))
-  .catch(err => console.error("Error launching bot:", err));
-
-// ============= ERROR HANDLING =============
-bot.catch((err, ctx) => {
-  console.error(`Error for ${ctx.updateType}:`, err);
+bot.launch().then(() => {
+  console.log('Bot started successfully');
+}).catch((error) => {
+  console.error('Error launching bot:', error);
 });
+
 // ============= GRACEFUL SHUTDOWN =============
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
