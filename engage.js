@@ -3,10 +3,7 @@ const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
 const app = express();
-const bot = new Telegraf("8506824449:AAERKazx1gTslD2MCRZXEIxQLMuribqtTQw");
-
-
-
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
