@@ -116,6 +116,32 @@ const cleanupExpiredMutes = (groupData) => {
 };
 
 // ============= DATABASE FUNCTIONS =============
+// ============= LINK STORAGE FUNCTIONS =============
+const getTrackingLink = async () => {
+  try {
+    const doc = await db.collection('config').doc('tracking_link').get();
+    if (doc.exists) {
+      return doc.data().link || 'https://x.com/always_alpha007';
+    }
+    return 'https://x.com/always_alpha007'; // Default
+  } catch (error) {
+    console.error('Error getting tracking link:', error);
+    return 'https://x.com/always_alpha007';
+  }
+};
+
+const setTrackingLink = async (link) => {
+  try {
+    await db.collection('config').doc('tracking_link').set({
+      link: link,
+      updatedAt: new Date()
+    }, { merge: true });
+    return true;
+  } catch (error) {
+    console.error('Error setting tracking link:', error);
+    return false;
+  }
+};
 const getGroupData = async (groupId) => {
   // Check cache first
   if (groupDataCache.has(groupId)) {
@@ -565,7 +591,7 @@ bot.command('check', async (ctx) => {
   if (groupData.state !== BOT_STATES.SLOT_OPEN) {
     return ctx.reply('No active slot session. Use /open first.');
   }
-
+  const trackingLink = await getTrackingLink();
   groupData.state = BOT_STATES.CHECKING;
   groupData.locked = false;
 
@@ -1979,6 +2005,37 @@ bot.command('xban', async (ctx) => {
   }
 });
 
+bot.command('setlink', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  const args = ctx.message.text.split(' ');
+  
+  if (args.length < 2) {
+    return ctx.reply('Usage: /setlink <new_link>\nExample: /setlink https://x.com/new_username');
+  }
+
+  const newLink = args.slice(1).join(' ');
+  
+  // Validate it's an X/Twitter link
+  if (!newLink.includes('x.com/') && !newLink.includes('twitter.com/')) {
+    return ctx.reply('❌ Please provide a valid X/Twitter link.');
+  }
+
+  const success = await setTrackingLink(newLink);
+  
+  if (success) {
+    await ctx.reply(`✅ Tracking link updated to:\n${newLink}`);
+  } else {
+    await ctx.reply('❌ Failed to update tracking link.');
+  }
+});
+
 // ============= XUNBAN COMMAND - UNBAN BY X USERNAME =============
 bot.command('xunban', async (ctx) => {
   const groupId = ctx.chat.id;
@@ -2755,6 +2812,7 @@ bot.on('message', async (ctx) => {
       const linkData = groupData.userLinks.get(userId);
       const xUsername = linkData ? linkData.xUsername : 'N/A';
       const userDisplayName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+      const userSubmittedLink = linkData ? linkData.link : 'No link found';
       
       if (isInSRList) {
         await ctx.reply(`${userDisplayName} (X: @${xUsername}) submitted new proof. SR list (#${srNumber}) - wait for admin approval`);
@@ -2765,10 +2823,12 @@ bot.on('message', async (ctx) => {
           tgUserId: userId,
           xUsername: xUsername,
           timestamp: new Date(),
-          approved: true
+          approved: true,
+          submittedLink: userSubmittedLink
         });
         
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅`);
+        // Show the link they submitted during slot phase
+        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅\n\n🔗 Your submitted link:\n${userSubmittedLink}`);
         await saveGroupData(groupId, groupData);
       }
     } else {
