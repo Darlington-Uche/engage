@@ -2,6 +2,7 @@ const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
+const axios = require('axios');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ============= CONSTANTS & CONFIGURATION =============
@@ -19,6 +20,31 @@ const groupDataCache = new Map();
 const PIN_INTERVAL = 10; // minutes
 
 // ============= UTILITY FUNCTIONS =============
+// ============= ALLOWED GROUPS CONFIGURATION =============
+const ALLOWED_GROUP_IDS = [
+  -1003432835643,  //
+  -1002758821586,  // 
+  -1002290722920,
+  -1002591527828,
+  -1002322630696 //
+];
+// ============= GROUP CHECK FUNCTION =============
+function isGroupAllowed(groupId) {
+  return ALLOWED_GROUP_IDS.includes(groupId);
+}
+
+function requireAllowedGroup(ctx, next) {
+  if (!ctx.chat || ctx.chat.type === 'private') {
+    return next();
+  }
+  
+  if (!isGroupAllowed(ctx.chat.id)) {
+    console.log(`Blocked access from unauthorized group: ${ctx.chat.id} - ${ctx.chat.title}`);
+    return; // Silently ignore commands from unauthorized groups
+  }
+  
+  return next();
+}
 
 async function getTargetUser(ctx) {
   const msg = ctx.message;
@@ -82,16 +108,112 @@ async function muteAllUsers(ctx, groupData, groupId) {
   return { mutedCount, failedMutes };
 }
 
-const extractUsernameFromXLink = (url) => {
-  const match = url.match(/https?:\/\/x\.com\/([^\/]+)\/status\/[0-9]+/i) || 
-                url.match(/https?:\/\/(?:www\.)?x\.com\/([^\/]+)/i) ||
-                url.match(/https?:\/\/twitter\.com\/([^\/]+)\/status\/[0-9]+/i) ||
-                url.match(/https?:\/\/(?:www\.)?twitter\.com\/([^\/]+)/i);
-  return match ? match[1].toLowerCase() : null;
-};
+  
+  // Direct extractio
 
+const extractUsernameFromXLink = async (url) => {
+  if (!url || typeof url !== 'string') return null;
+  
+  // METHOD 1: Direct extraction from URL
+  const directPatterns = [
+    /https?:\/\/x\.com\/([^\/]+)\/status\/[0-9]+/i,
+    /https?:\/\/(?:www\.)?x\.com\/([^\/]+)/i,
+    /https?:\/\/twitter\.com\/([^\/]+)\/status\/[0-9]+/i,
+    /https?:\/\/(?:www\.)?twitter\.com\/([^\/]+)/i
+  ];
+  
+  for (const pattern of directPatterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      const username = match[1].toLowerCase();
+      // Skip shortened links - we'll handle them separately
+      if (username === 'i' || username === 'intent') {
+        break; // Exit loop and try other methods
+      }
+      return username;
+    }
+  }
+  
+  // METHOD 2: If it's a shortened link, try to extract tweet ID
+  const shortenedPattern = /\/i\/status\/(\d+)/i;
+  const match = url.match(shortenedPattern);
+  
+  if (match && match[1]) {
+    const tweetId = match[1];
+    
+    try {
+      // Try using Twitter's oEmbed API (more reliable)
+      const oembedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`;
+      const response = await axios.get(oembedUrl, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json'
+        }
+      });
+      
+      if (response.data && response.data.author_url) {
+        const authorMatch = response.data.author_url.match(/twitter\.com\/([^\/]+)/i);
+        if (authorMatch && authorMatch[1]) {
+          return authorMatch[1].toLowerCase();
+        }
+      }
+    } catch (error) {
+      console.log('oEmbed method failed:', error.message);
+    }
+    
+    try {
+      // METHOD 3: Try using Twitter's syndication API (no API key needed)
+      const syndicationUrl = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`;
+      const response = await axios.get(syndicationUrl, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.data && response.data.user) {
+        return response.data.user.screen_name.toLowerCase();
+      }
+    } catch (error) {
+      console.log('Syndication method failed:', error.message);
+    }
+    
+    try {
+      // METHOD 4: Try to fetch the page and parse HTML
+      const htmlResponse = await axios.get(`https://twitter.com/i/status/${tweetId}`, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      const html = htmlResponse.data;
+      
+      // Try to find username in meta tags
+      const metaPatterns = [
+        /"screen_name":"([^"]+)"/i,
+        /"userScreenName":"([^"]+)"/i,
+        /twitter\.com\/([^\/"]+)/i,
+        /content="https:\/\/twitter\.com\/([^\/"]+)/i
+      ];
+      
+      for (const pattern of metaPatterns) {
+        const metaMatch = html.match(pattern);
+        if (metaMatch && metaMatch[1] && metaMatch[1] !== 'i' && metaMatch[1] !== 'intent') {
+          return metaMatch[1].toLowerCase();
+        }
+      }
+    } catch (error) {
+      console.log('HTML parsing method failed:', error.message);
+    }
+  }
+  
+  return null;
+};
 const isXLink = (text) => {
-  return text && (text.includes('x.com/') || text.includes('twitter.com/'));
+  if (!text || typeof text !== 'string') return false;
+  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/.+/i.test(text);
 };
 
 const isAdmin = async (ctx, userId) => {
@@ -447,7 +569,7 @@ const saveMutedUserToFirebase = async (groupId, xUsername, tgUsername, mutedBy, 
 
 
 /// ============= BOT COMMANDS =============
-bot.command('open', async (ctx) => {
+bot.command('open', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -512,8 +634,142 @@ bot.command('open', async (ctx) => {
   
   startSlotReminderJob(ctx, groupId);
 });
+// ============= RULES COMMAND =============
+bot.command('rl', requireAllowedGroup, async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Only admins can use /rl
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  const rulesMessage = `𝙂𝙧𝙤𝙪𝙥 𝙍𝙪𝙡𝙚𝙨 & 𝙂𝙪𝙞𝙙𝙖𝙣𝙘𝙚
 
-bot.command('loc', async (ctx) => {
+━━━━━━━━━━━━━━━━━━
+⚠️ *Violating These Rules Will Lead To Restrictions* ⚠️
+━━━━━━━━━━━━━━━━━━
+
+1️⃣ *PROFILE MATCHING*
+   Your X profile name and Telegram name must be the same
+
+2️⃣ *ONE LINK PER SLOT*
+   Only one link per slot is allowed
+
+3️⃣ *VISIBLE PROFILE*
+   Your X profile must be clearly visible in the video
+
+4️⃣ *COMPLETE PROOF*
+   Include both the starting and ending tweets of the slot ID
+
+5️⃣ *NO CHATTING*
+   Chatting strictly not allowed in the group
+
+6️⃣ *STRICT COMPLIANCE*
+   Ensure strict compliance to avoid restrictions
+━━━━━━━━━━━━━━━━━━`;
+
+  await ctx.reply(rulesMessage, { parse_mode: "Markdown" });
+});
+// ============= HELP COMMAND (ADMIN ONLY) =============
+bot.command('help', requireAllowedGroup, async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Only admins can use /help
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  const helpMessage = `🤖 *ENGAGE BOT - ADMIN COMMAND LIST* 🤖
+
+━━━━━━━━━━━━━━━━━━
+🎰 *SLOT MANAGEMENT*
+━━━━━━━━━━━━━━━━━━
+• /open - Open slot phase
+• /check - Start checking phase (1.5 hrs)
+• /loc - Lock group immediately
+• /end - End slot & clear all data
+
+━━━━━━━━━━━━━━━━━━
+📊 *VIEWING & STATS*
+━━━━━━━━━━━━━━━━━━
+• /total - Total links submitted
+• /stats - Detailed slot statistics
+• /list - All participants with X usernames
+• /safe - Safe users (submitted proof)
+• /scam - Scam users (no proof)
+• /srlist - SR list (pending approval)
+• /mutelist - Currently muted users
+• /xbanlist - Banned X usernames
+
+━━━━━━━━━━━━━━━━━━
+🔍 *USER INVESTIGATION*
+━━━━━━━━━━━━━━━━━━
+• /link - View user's submitted X link (reply to user)
+• /sr - Add user to SR list (reply to user)
+• /ad [number] - Approve SR user (e.g., /ad 1)
+
+━━━━━━━━━━━━━━━━━━
+👮 *MODERATION*
+━━━━━━━━━━━━━━━━━━
+• /mute [duration] [reason] - Mute user
+  Examples: /mute 30, /mute 2h, /mute 1d Spamming
+• /unmute - Unmute user
+• /ban [reason] - Ban user
+• /unban - Unban user
+• /muteall - Mute all scam+SR users (2 days)
+
+━━━━━━━━━━━━━━━━━━
+🐦 *X/TWITTER COMMANDS*
+━━━━━━━━━━━━━━━━━━
+• /xmute @xuser [duration] - Mute by X username
+• /xunmute @xuser - Unmute by X username
+• /xban @xuser [reason] - Ban by X username
+• /xunban @xuser - Unban by X username
+• /setlink <url> - Change tracking link
+
+━━━━━━━━━━━━━━━━━━
+🛠️ *UTILITIES*
+━━━━━━━━━━━━━━━━━━
+• /clear - Delete messages (bulk cleanup)
+• /requeststats - Request system stats
+
+━━━━━━━━━━━━━━━━━━
+📝 *USAGE EXAMPLES*
+━━━━━━━━━━━━━━━━━━
+• /mute @username 30 Spamming
+• /xmute @twitteruser 2h
+• /xban @scammer Duplicate account
+• /ad 3 (approves SR user #3)
+• /link (reply to user to see their X link)
+
+━━━━━━━━━━━━━━━━━━
+⚠️ *IMPORTANT NOTES*
+━━━━━━━━━━━━━━━━━━
+• Checking phase auto-locks after 1.5 hours
+• Auto-mutes scam/SR users after deadline
+• X bans last 2 days (persistent)
+• Admin messages are ignored by bot
+• Most commands require replying to user
+
+━━━━━━━━━━━━━━━━━━
+⏰ *TIMING REFERENCE*
+━━━━━━━━━━━━━━━━━━
+• 30 = 30 minutes
+• 2h = 2 hours
+• 1d = 1 day
+• 2d = 2 days (X bans)
+
+*Type any command for specific usage help.*`;
+
+  await ctx.reply(helpMessage, { parse_mode: "Markdown" });
+});
+
+
+bot.command('loc', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -577,7 +833,7 @@ bot.command('loc', async (ctx) => {
      }
 });
 
-bot.command('check', async (ctx) => {
+bot.command('check', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -631,7 +887,7 @@ bot.command('check', async (ctx) => {
 const checkMsg =
   `<b>⚡ Checking phase Started</b>\n` +
   `Drop the video proof of screen record here with AD, or only proof\n\n` +
-  `🔗 https://x.com/always_alpha007 \n\n` +
+  `🔗 ${trackingLink}\n\n` +
   `⏳ <b>Deadline:</b> ${hrs} hr ${mins} mins\n` +
   `🕒 <b>Ends At:</b> ${istDate} IST\n\n` +
   `📤 <b>SEND AD, ALL DONE, DONE WITH SR PROOF</b>\n`;
@@ -680,7 +936,7 @@ const sentMessage = await ctx.reply(checkMsg, { parse_mode: "HTML" });
 });                                                                                                                  
 
 
-bot.command('total', async (ctx) => {
+bot.command('total', requireAllowedGroup, async (ctx) => {
 
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -739,7 +995,7 @@ bot.command('stats', async (ctx) => {
   await ctx.reply(statsMessage, { parse_mode: "Markdown" });
 });
 
-bot.command('list', async (ctx) => {
+bot.command('list', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -792,7 +1048,7 @@ bot.command('list', async (ctx) => {
 });
 
 // ============= NEW COMMAND: /clear =============
-bot.command('clear', async (ctx) => {
+bot.command('clear', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -883,7 +1139,7 @@ bot.command('clear', async (ctx) => {
   }
 });
 
-bot.command('link', async (ctx) => {
+bot.command('link', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -921,7 +1177,7 @@ bot.command('link', async (ctx) => {
   );
 });
 
-bot.command('safe', async (ctx) => {
+bot.command('safe', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -949,7 +1205,7 @@ bot.command('safe', async (ctx) => {
   ctx.reply(safeList);
 });
 
-bot.command('scam', async (ctx) => {
+bot.command('scam', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -994,7 +1250,7 @@ bot.command('scam', async (ctx) => {
 });
 
 
-bot.command('srlist', async (ctx) => {
+bot.command('srlist', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1029,7 +1285,7 @@ bot.command('srlist', async (ctx) => {
 });
 
 
-bot.command('sr', async (ctx) => {
+bot.command('sr', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1089,7 +1345,7 @@ bot.command('sr', async (ctx) => {
   ctx.reply(warningMsg);
 });
 
-bot.command('ad', async (ctx) => {
+bot.command('ad', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1137,7 +1393,7 @@ bot.command('ad', async (ctx) => {
   }
 });
 
-bot.command('muteall', async (ctx) => {
+bot.command('muteall', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1184,7 +1440,7 @@ bot.command('muteall', async (ctx) => {
 });
 
 // ============= MUTE COMMAND WITH DURATION =============
-bot.command('mute', async (ctx) => {
+bot.command('mute', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1309,7 +1565,7 @@ bot.command('mute', async (ctx) => {
 });
 
 // ============= UNMUTE COMMAND =============
-bot.command('unmute', async (ctx) => {
+bot.command('unmute', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1371,7 +1627,7 @@ bot.command('unmute', async (ctx) => {
 });
 
 // ============= BAN COMMAND =============
-bot.command('ban', async (ctx) => {
+bot.command('ban', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1435,7 +1691,7 @@ bot.command('ban', async (ctx) => {
 });
 
 // ============= UNBAN COMMAND =============
-bot.command('unban', async (ctx) => {
+bot.command('unban', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -2005,7 +2261,7 @@ bot.command('xban', async (ctx) => {
   }
 });
 
-bot.command('setlink', async (ctx) => {
+bot.command('setlink', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -2124,6 +2380,7 @@ bot.command('xunban', async (ctx) => {
     await ctx.reply(`✅ X username @${xUsername} has been removed from the blocked list, but user might not be in the group or already unbanned.\n\nError: ${error.message}`);
   }
 });
+
 
 // ============= XBANLIST COMMAND (OPTIONAL) - VIEW BANNED X USERNAMES =============
 bot.command('xbanlist', async (ctx) => {
@@ -2679,18 +2936,25 @@ bot.command('end', async (ctx) => {
 });
 
 // ============= MESSAGE HANDLERS =============
-bot.on('message', async (ctx) => {
+bot.on('message', requireAllowedGroup, async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.message.text && ctx.message.text.startsWith('/')) return;
   if (ctx.from.id === ctx.botInfo.id) return;
 
   const groupId = ctx.chat.id;
   const userId = ctx.from.id.toString();
+  
+  // Check if user is admin - COMPLETELY IGNORE ADMINS
+  const isUserAdmin = await isAdmin(ctx, userId);
+  if (isUserAdmin) {
+    return; // Skip all processing for admins
+  }
+  
   let groupData = await getGroupData(groupId);
   
   cleanupExpiredMutes(groupData);
   
-  // SLOT PHASE: Handle X links
+  // SLOT PHASE: Handle X links (only regular users)
   if (groupData.state === BOT_STATES.SLOT_OPEN) {
     const messageText = ctx.message.text || '';
     
@@ -2710,7 +2974,7 @@ bot.on('message', async (ctx) => {
     
     // Handle X link submission
     if (isXLink(messageText)) {
-      const xUsername = extractUsernameFromXLink(messageText);
+      const xUsername = await extractUsernameFromXLink(messageText);
       
       if (!xUsername) {
         await ctx.deleteMessage();
@@ -2786,7 +3050,7 @@ bot.on('message', async (ctx) => {
     }
   }
   
-  // CHECKING PHASE: Handle media submissions
+  // CHECKING PHASE: Handle media submissions (only regular users)
   else if (groupData.state === BOT_STATES.CHECKING) {
     // Check if user dropped a link in slot phase
     if (!groupData.userLinks.has(userId)) {
@@ -2840,7 +3104,7 @@ bot.on('message', async (ctx) => {
       // Photos and other media are ignored (not deleted, not added to safe list)
     }
   }
-  });
+});
 
 bot.launch().then(() => {
   console.log('Bot started successfully');
