@@ -2790,10 +2790,6 @@ bot.launch()
 bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err);
 });
-
-
-// Export the Express app for Render
-module.exports = app;
-
+// ============= GRACEFUL SHUTDOWN =============
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
