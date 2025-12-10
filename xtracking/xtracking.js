@@ -325,7 +325,7 @@ const saveGroupData = async (groupId, data) => {
       srCounter: data.srCounter,
       currentPinnedMessageId: data.currentPinnedMessageId,
       createdAt: data.createdAt,
-      updatedAt: new Date()
+      updatedAt: new Date().toISOString()  
     };
 
     await db.collection('groups').doc(groupId.toString()).set(firebaseData, { merge: true });
@@ -2934,7 +2934,7 @@ bot.command('end', async (ctx) => {
 });
 
 // ============= MESSAGE HANDLERS =============
-bot.on('message', requireAllowedGroup, async (ctx) => {
+bot.on('message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.message.text && ctx.message.text.startsWith('/')) return;
   if (ctx.from.id === ctx.botInfo.id) return;
