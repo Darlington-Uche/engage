@@ -4,7 +4,7 @@ const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
 const axios = require('axios');
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_LIKE);
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
@@ -23,10 +23,9 @@ const PIN_INTERVAL = 20; // minutes
 // ============= UTILITY FUNCTIONS =============
 // ============= ALLOWED GROUPS CONFIGURATION =============
 const ALLOWED_GROUP_IDS = [
--1002157265749,
--1002758821586,
--1003086655968,
--1002269801668
+-1002290722920,
+-1002591527828,
+-1002322630696
 ];
 // ============= GROUP CHECK FUNCTION =============
 function isGroupAllowed(groupId) {
