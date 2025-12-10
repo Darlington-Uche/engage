@@ -3104,12 +3104,52 @@ bot.on('message', async (ctx) => {
   }
 });
 
-bot.launch().then(() => {
-  console.log('Bot started successfully');
-}).catch((error) => {
-  console.error('Error launching bot:', error);
+// ============= AUTO RESTART ON ERROR =============
+function startBot() {
+  bot.launch().then(() => {
+    console.log('🤖 Bot started successfully at', new Date().toLocaleString());
+  }).catch((error) => {
+    console.error('❌ Error launching bot:', error);
+    console.log('🔄 Attempting to restart in 5 seconds...');
+    
+    // Auto-restart after 5 seconds
+    setTimeout(() => {
+      console.log('🔄 Restarting bot...');
+      startBot();
+    }, 5000);
+  });
+}
+
+// Start 
+startBot();
+
+// ============= GLOBAL ERROR HANDLER =============
+process.on('uncaughtException', (error) => {
+  console.error('🚨 UNCAUGHT EXCEPTION:', error);
+  console.log('🔄 Bot will restart in 10 seconds...');
+  
+  setTimeout(() => {
+    console.log('🔄 Restarting due to uncaught exception...');
+    bot.stop();
+    startBot();
+  }, 3000);
 });
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨 UNHANDLED REJECTION at:', promise, 'reason:', reason);
+  // Don't restart for unhandled rejections, just log
+});
+
+// ============= GRACEFUL SHUTDOWN =============
+process.once('SIGINT', () => {
+  console.log('🛑 Received SIGINT. Stopping bot gracefully...');
+  bot.stop('SIGINT');
+});
+
+process.once('SIGTERM', () => {
+  console.log('🛑 Received SIGTERM. Stopping bot gracefully...');
+  bot.stop('SIGTERM');
+});
 // ============= GRACEFUL SHUTDOWN =============
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
