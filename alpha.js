@@ -4,7 +4,7 @@ const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
 const axios = require('axios');
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_ELITE);
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
@@ -23,13 +23,10 @@ const PIN_INTERVAL = 10; // minutes
 // ============= UTILITY FUNCTIONS =============
 // ============= ALLOWED GROUPS CONFIGURATION =============
 const ALLOWED_GROUP_IDS = [
--1002157265749,
--1002758821586,
--1003086655968,
--1002290722920,
--1002591527828,
--1002269801668,
--1002322630696
+-1003383742317,
+-1003294010087,
+-1002818901358,
+-1003416694385
 ];
 // ============= GROUP CHECK FUNCTION =============
 function isGroupAllowed(groupId) {
@@ -1051,7 +1048,7 @@ bot.command('list', requireAllowedGroup, async (ctx) => {
 });
 
 // ============= NEW COMMAND: /clear =============
-bot.command('clear', requireAllowedGroup, async (ctx) => {
+bot.command('clear', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1066,23 +1063,27 @@ bot.command('clear', requireAllowedGroup, async (ctx) => {
   const progressMsg = await ctx.reply('🧹 Starting to clear messages... (0 deleted)');
   
   let messagesDeleted = 0;
-  const BATCH_SIZE = 50;
-  const DELAY_BETWEEN_BATCHES = 5000; // 3 seconds
+  const BATCH_SIZE = 20; // Reduced from 50 to avoid rate limits
+  const DELAY_BETWEEN_BATCHES = 3000; // 3 seconds delay
   
   try {
     let lastMessageId = ctx.message.message_id - 1;
     let batchCount = 0;
     let shouldContinue = true;
+    let batchNumber = 0;
     
     while (shouldContinue && lastMessageId > 0) {
       batchCount = 0;
+      batchNumber++;
       const batchPromises = [];
       
       // Try to delete a batch of messages
       while (batchCount < BATCH_SIZE && lastMessageId > 0) {
         batchPromises.push(
-          ctx.telegram.deleteMessage(groupId, lastMessageId).catch(() => {
-            // Ignore errors for individual messages
+          ctx.telegram.deleteMessage(groupId, lastMessageId).catch((error) => {
+            // Log errors but continue
+            console.log(`Failed to delete message ${lastMessageId}:`, error.message);
+            return null;
           })
         );
         lastMessageId--;
@@ -1090,8 +1091,9 @@ bot.command('clear', requireAllowedGroup, async (ctx) => {
       }
       
       // Wait for batch to complete
-      await Promise.all(batchPromises);
-      messagesDeleted += batchCount;
+      const results = await Promise.all(batchPromises);
+      const successfulDeletes = results.filter(result => result !== null).length;
+      messagesDeleted += successfulDeletes;
       
       // Update progress message
       try {
@@ -1099,24 +1101,19 @@ bot.command('clear', requireAllowedGroup, async (ctx) => {
           groupId,
           progressMsg.message_id,
           null,
-          `🧹 Clearing messages... (${messagesDeleted} deleted so far)`
+          `🧹 Clearing messages... (${messagesDeleted} deleted, batch ${batchNumber})`
         );
       } catch (error) {
-        // If we can't edit, send a new message
-        try {
-          await ctx.telegram.sendMessage(groupId, `🧹 Cleared ${messagesDeleted} messages so far...`);
-        } catch (e) {
-          // Ignore
-        }
+        console.log('Could not edit progress message:', error.message);
       }
       
-      // Stop if we've deleted a lot of messages or reached the beginning
-      if (messagesDeleted >= 50000 || lastMessageId <= 1) {
+      // Stop conditions
+      if (messagesDeleted >= 1000 || lastMessageId <= 1 || batchNumber >= 50) {
         shouldContinue = false;
         break;
       }
       
-      // Wait before next batch
+      // Wait before next batch (respect Telegram rate limits)
       await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
     }
     
@@ -1136,9 +1133,7 @@ bot.command('clear', requireAllowedGroup, async (ctx) => {
     
   } catch (error) {
     console.error('Error in clear command:', error);
-    await ctx.reply(`❌ Error clearing messag
-        
-        s: ${error.message}`);
+    await ctx.reply(`❌ Error clearing messages: ${error.message}`);
   }
 });
 
