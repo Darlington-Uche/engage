@@ -1,10 +1,9 @@
-require('dns').setDefaultResultOrder('ipv4first');
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
 const axios = require('axios');
-const bot = new Telegraf(process.env.BOT_ELITE);
+const bot = new Telegraf(process.env.BOT_TEST);
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
@@ -15,20 +14,12 @@ const BOT_STATES = {
   LOCKED: 'locked'
 };
 
-
+const PIN_INTERVAL = 20; // minutes
+const ALLOWED_GROUP_IDS = [-1003432835643];
 const cronJobs = new Map();
 const groupDataCache = new Map();
-const PIN_INTERVAL = 10; // minutes
 
 // ============= UTILITY FUNCTIONS =============
-// ============= ALLOWED GROUPS CONFIGURATION =============
-const ALLOWED_GROUP_IDS = [
--1003383742317,
--1003294010087,
--1002818901358,
--1003416694385
-];
-// ============= GROUP CHECK FUNCTION =============
 function isGroupAllowed(groupId) {
   return ALLOWED_GROUP_IDS.includes(groupId);
 }
@@ -40,177 +31,12 @@ function requireAllowedGroup(ctx, next) {
   
   if (!isGroupAllowed(ctx.chat.id)) {
     console.log(`Blocked access from unauthorized group: ${ctx.chat.id} - ${ctx.chat.title}`);
-    return; // Silently ignore commands from unauthorized groups
+    return;
   }
   
   return next();
 }
 
-async function getTargetUser(ctx) {
-  const msg = ctx.message;
-
-  // 1️⃣ If replying to a user
-  if (msg.reply_to_message) {
-    return msg.reply_to_message.from;
-  }
-
-  // 2️⃣ If user mentioned by username like @abc
-  if (msg.entities) {
-    for (let e of msg.entities) {
-      if (e.type === "mention") {
-        const username = msg.text.substring(e.offset + 1, e.offset + e.length); // remove @
-        try {
-          const user = await ctx.telegram.getChatMember(ctx.chat.id, username);
-          return user.user;
-        } catch (err) {}
-      }
-    }
-  }
-
-  // 3️⃣ If user ID or text name after command
-  const parts = msg.text.split(" ");
-  if (parts[1]) {
-    const id = parts[1].replace("@", "");
-
-    try {
-      const user = await ctx.telegram.getChatMember(ctx.chat.id, id);
-      return user.user;
-    } catch (err) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-async function muteAllUsers(ctx, groupData, groupId) {
-  let mutedCount = 0;
-  const failedMutes = [];
-
-  // Mute scam users
-  for (const [uid, userData] of groupData.scamUsers.entries()) {
-    const success = await muteUser(ctx, groupData, uid, userData.xUsername, 2 * 24 * 60);
-    if (success) mutedCount++;
-    else failedMutes.push(userData.tgUsername || uid);
-  }
-
-  // Mute SR users
-  for (const [number, data] of groupData.srList.entries()) {
-    const linkData = groupData.userLinks.get(data.userId);
-    const xUsername = linkData ? linkData.xUsername : null;
-    const success = await muteUser(ctx, groupData, data.userId, xUsername, 2 * 24 * 60);
-    if (success) mutedCount++;
-    else failedMutes.push(data.tgUsername || data.userId);
-  }
-
-  await saveGroupData(groupId, groupData);
-
-  return { mutedCount, failedMutes };
-}
-
-  
-  // Direct extractio
-
-const extractUsernameFromXLink = async (url) => {
-  if (!url || typeof url !== 'string') return null;
-  
-  // METHOD 1: Direct extraction from URL
-  const directPatterns = [
-    /https?:\/\/x\.com\/([^\/]+)\/status\/[0-9]+/i,
-    /https?:\/\/(?:www\.)?x\.com\/([^\/]+)/i,
-    /https?:\/\/twitter\.com\/([^\/]+)\/status\/[0-9]+/i,
-    /https?:\/\/(?:www\.)?twitter\.com\/([^\/]+)/i
-  ];
-  
-  for (const pattern of directPatterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      const username = match[1].toLowerCase();
-      // Skip shortened links - we'll handle them separately
-      if (username === 'i' || username === 'intent') {
-        break; // Exit loop and try other methods
-      }
-      return username;
-    }
-  }
-  
-  // METHOD 2: If it's a shortened link, try to extract tweet ID
-  const shortenedPattern = /\/i\/status\/(\d+)/i;
-  const match = url.match(shortenedPattern);
-  
-  if (match && match[1]) {
-    const tweetId = match[1];
-    
-    try {
-      // Try using Twitter's oEmbed API (more reliable)
-      const oembedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`;
-      const response = await axios.get(oembedUrl, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json'
-        }
-      });
-      
-      if (response.data && response.data.author_url) {
-        const authorMatch = response.data.author_url.match(/twitter\.com\/([^\/]+)/i);
-        if (authorMatch && authorMatch[1]) {
-          return authorMatch[1].toLowerCase();
-        }
-      }
-    } catch (error) {
-      console.log('oEmbed method failed:', error.message);
-    }
-    
-    try {
-      // METHOD 3: Try using Twitter's syndication API (no API key needed)
-      const syndicationUrl = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`;
-      const response = await axios.get(syndicationUrl, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      if (response.data && response.data.user) {
-        return response.data.user.screen_name.toLowerCase();
-      }
-    } catch (error) {
-      console.log('Syndication method failed:', error.message);
-    }
-    
-    try {
-      // METHOD 4: Try to fetch the page and parse HTML
-      const htmlResponse = await axios.get(`https://twitter.com/i/status/${tweetId}`, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      const html = htmlResponse.data;
-      
-      // Try to find username in meta tags
-      const metaPatterns = [
-        /"screen_name":"([^"]+)"/i,
-        /"userScreenName":"([^"]+)"/i,
-        /twitter\.com\/([^\/"]+)/i,
-        /content="https:\/\/twitter\.com\/([^\/"]+)/i
-      ];
-      
-      for (const pattern of metaPatterns) {
-        const metaMatch = html.match(pattern);
-        if (metaMatch && metaMatch[1] && metaMatch[1] !== 'i' && metaMatch[1] !== 'intent') {
-          return metaMatch[1].toLowerCase();
-        }
-      }
-    } catch (error) {
-      console.log('HTML parsing method failed:', error.message);
-    }
-  }
-  
-  return null;
-};
 const isXLink = (text) => {
   if (!text || typeof text !== 'string') return false;
   return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/.+/i.test(text);
@@ -226,37 +52,27 @@ const isAdmin = async (ctx, userId) => {
   }
 };
 
-const cleanupExpiredMutes = (groupData) => {
-  const now = new Date();
-  const twoDaysAgo = new Date(now.getTime() - (2 * 24 * 60 * 60 * 1000));
-  
-  for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
-    if (new Date(muteData.mutedAt) < twoDaysAgo) {
-      groupData.mutedXUsernames.delete(xUsername);
-    }
-  }
-};
-
 // ============= DATABASE FUNCTIONS =============
-// ============= LINK STORAGE FUNCTIONS =============
-const getTrackingLink = async () => {
+const getTrackingLink = async (groupId) => {
   try {
-    const doc = await db.collection('config').doc('tracking_link').get();
+    const doc = await db.collection('groupTrackingLinks').doc(groupId.toString()).get();
     if (doc.exists) {
-      return doc.data().link || 'https://x.com/always_alpha007';
+      const data = doc.data();
+      return data.link || 'https://x.com/always_alpha007';
     }
-    return 'https://x.com/always_alpha007'; // Default
+    return 'https://x.com/always_alpha007';
   } catch (error) {
     console.error('Error getting tracking link:', error);
     return 'https://x.com/always_alpha007';
   }
 };
 
-const setTrackingLink = async (link) => {
+const setTrackingLink = async (groupId, link) => {
   try {
-    await db.collection('config').doc('tracking_link').set({
+    await db.collection('groupTrackingLinks').doc(groupId.toString()).set({
       link: link,
-      updatedAt: new Date()
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'admin'
     }, { merge: true });
     return true;
   } catch (error) {
@@ -264,8 +80,26 @@ const setTrackingLink = async (link) => {
     return false;
   }
 };
+
+const getDefaultGroupData = () => {
+  return {
+    state: BOT_STATES.IDLE,
+    userLinks: new Map(),
+    safeUsers: new Map(),
+    scamUsers: new Map(),
+    srList: new Map(),
+    mutedUsers: new Map(),
+    mutedXUsernames: new Map(),
+    linkCount: 0,
+    srCounter: 1,
+    currentPinnedMessageId: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    locked: false
+  };
+};
+
 const getGroupData = async (groupId) => {
-  // Check cache first
   if (groupDataCache.has(groupId)) {
     return groupDataCache.get(groupId);
   }
@@ -274,7 +108,6 @@ const getGroupData = async (groupId) => {
     const doc = await db.collection('groups').doc(groupId.toString()).get();
     if (doc.exists) {
       const data = doc.data();
-      // Convert to Maps
       const processedData = {
         ...data,
         state: data.state || BOT_STATES.IDLE,
@@ -286,17 +119,16 @@ const getGroupData = async (groupId) => {
         mutedXUsernames: new Map(Object.entries(data.mutedXUsernames || {})),
         linkCount: data.linkCount || 0,
         srCounter: data.srCounter || 1,
+        currentPinnedMessageId: data.currentPinnedMessageId || null,
+        locked: data.locked || false,
         createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
-        updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date(),
-        currentPinnedMessageId: data.currentPinnedMessageId || null
+        updatedAt: data.updatedAt ? new Date(data.updatedAt) : new Date()
       };
       
-      // Cache the data
       groupDataCache.set(groupId, processedData);
       return processedData;
     }
     
-    // Return default data if doesn't exist
     const defaultData = getDefaultGroupData();
     groupDataCache.set(groupId, defaultData);
     return defaultData;
@@ -321,37 +153,180 @@ const saveGroupData = async (groupId, data) => {
       linkCount: data.linkCount,
       srCounter: data.srCounter,
       currentPinnedMessageId: data.currentPinnedMessageId,
-      createdAt: data.createdAt,
-      updatedAt: new Date()
+      locked: data.locked || false,
+      deadline: data.deadline || null,
+      createdAt: data.createdAt ? data.createdAt.toISOString() : new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
 
     await db.collection('groups').doc(groupId.toString()).set(firebaseData, { merge: true });
-    
-    // Update cache
     groupDataCache.set(groupId, data);
   } catch (error) {
     console.error('Error saving group data:', error);
   }
 };
 
-const getDefaultGroupData = () => {
-  return {
-    state: BOT_STATES.IDLE,
-    userLinks: new Map(),
-    safeUsers: new Map(),
-    scamUsers: new Map(),
-    srList: new Map(),
-    mutedUsers: new Map(),
-    mutedXUsernames: new Map(),
-    linkCount: 0,
-    srCounter: 1,
-    currentPinnedMessageId: null,
-    createdAt: new Date(),
-    updatedAt: new Date()
+// ============= X LINK PARSING FUNCTIONS =============
+const extractUsernameFromXLink = async (url) => {
+  if (!url || typeof url !== "string") return null;
+
+  const cleanUsername = (u) => {
+    if (!u) return null;
+    u = u.toLowerCase().trim();
+
+    const banned = [
+      "i", "intent", "imprint", "imprint.html", "privacy", 
+      "privacy.html", "status", "home", "tos", "tos.html"
+    ];
+
+    if (banned.includes(u)) return null;
+    if (u.includes("imprint") || u.includes("privacy") || u.includes("html")) return null;
+    if (!/^[a-z0-9_]{1,25}$/i.test(u)) return null;
+
+    return u;
   };
+
+  // Direct URL extraction
+  const directPatterns = [
+    /x\.com\/([^\/]+)\/status\/\d+/i,
+    /twitter\.com\/([^\/]+)\/status\/\d+/i,
+    /x\.com\/([^\/?#]+)/i,
+    /twitter\.com\/([^\/?#]+)/i,
+    /x\.com\/([^\/]+)$/i
+  ];
+
+  for (const p of directPatterns) {
+    const m = url.match(p);
+    const valid = cleanUsername(m?.[1]);
+    if (valid) return valid;
+  }
+
+  // Extract tweet ID
+  const matchId = url.match(/\/status\/(\d+)/i) || url.match(/\/i\/status\/(\d+)/i);
+  if (!matchId) return null;
+  const tweetId = matchId[1];
+
+  try {
+    // Try oEmbed
+    const r = await axios.get(
+      `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`,
+      { timeout: 6000 }
+    );
+    const m = r.data?.author_url?.match(/twitter\.com\/([^\/]+)/i);
+    const valid = cleanUsername(m?.[1]);
+    if (valid) return valid;
+  } catch {}
+
+  try {
+    // Try Syndication API
+    const r = await axios.get(
+      `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`,
+      { timeout: 6000 }
+    );
+    const valid = cleanUsername(r.data?.user?.screen_name);
+    if (valid) return valid;
+  } catch {}
+
+  return null;
 };
 
-// ============= USER MANAGEMENT FUNCTIONS =============
+// ============= UPDATED GET TARGET USER FUNCTION =============
+async function getTargetUser(ctx) {
+    const msg = ctx.message;
+    const chatId = ctx.chat.id;
+
+    if (!msg || !msg.text) return null;
+
+    // 1️⃣ Reply user - most accurate
+    if (msg.reply_to_message && msg.reply_to_message.from) {
+        return msg.reply_to_message.from;
+    }
+
+    // 2️⃣ Text mention entity (Telegram provides full user object)
+    if (msg.entities) {
+        for (let e of msg.entities) {
+            if (e.type === "text_mention" && e.user) {
+                return e.user;
+            }
+        }
+    }
+
+    let username = null;
+
+    // 3️⃣ Read @username mention (safe)
+    if (msg.entities) {
+        for (let e of msg.entities) {
+            if (e.type === "mention") {
+                username = msg.text.substring(e.offset + 1, e.offset + e.length);
+            }
+        }
+    }
+
+    // 4️⃣ Or read second argument (/cmd @username)
+    if (!username) {
+        const parts = msg.text.split(" ");
+        if (parts[1] && parts[1].startsWith("@")) {
+            username = parts[1].substring(1);
+        }
+    }
+
+    if (!username) return null;
+
+    username = username.toLowerCase();
+
+    // 5️⃣ 🔥 GET ALL CHAT MEMBERS & MATCH USERNAME
+    try {
+        const admins = await ctx.telegram.getChatAdministrators(chatId);
+
+        // Try admin list first
+        let found = admins.find(m =>
+            m.user.username &&
+            m.user.username.toLowerCase() === username
+        );
+
+        if (found) return found.user;
+    } catch (err) {
+        console.log("Error reading admin list:", err.message);
+    }
+
+    // 6️⃣ 
+    try {
+        const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
+        if (member && member.user) {
+            // Bots cannot list all members
+            // Only admin list + reply + text mention works
+        }
+    } catch {}
+
+    // 
+    return null;
+}
+
+
+const isUserMutedXUsername = async (groupId, xUsername) => {
+  try {
+    if (!xUsername || typeof xUsername !== 'string') return false;
+    
+    const xUsernameLower = xUsername.toLowerCase();
+    const doc = await db.collection('mutedUsers').doc(`${groupId}_${xUsernameLower}`).get();
+    
+    if (doc.exists) {
+      const data = doc.data();
+      const expiresAt = new Date(data.expiresAt);
+      if (expiresAt > new Date()) {
+        return true;
+      } else {
+        await db.collection('mutedUsers').doc(`${groupId}_${xUsernameLower}`).delete();
+        return false;
+      }
+    }
+    return false;
+  } catch (error) {
+    console.error('Error checking muted user:', error);
+    return false;
+  }
+};
+
 const muteUser = async (ctx, groupData, userId, xUsername = null, duration = 30) => {
   const untilDate = Math.floor(Date.now() / 1000) + (duration * 60);
   
@@ -384,18 +359,16 @@ const muteUser = async (ctx, groupData, userId, xUsername = null, duration = 30)
         mutedBy: ctx.from.id
       });
       
-      // Save to Firebase for permanent storage
       await saveMutedUserToFirebase(ctx.chat.id, xUsername, tgUsername, ctx.from.id);
     }
     
-    // Delete bot's message for muted user
     const userData = groupData.userLinks.get(userId.toString());
     if (userData && userData.botMessageId) {
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, userData.botMessageId);
         userData.botMessageId = null;
       } catch (error) {
-        console.error('Error deleting bot message for muted user:', error);
+        console.error('Error deleting bot message:', error);
       }
     }
     
@@ -406,144 +379,11 @@ const muteUser = async (ctx, groupData, userId, xUsername = null, duration = 30)
   }
 };
 
-const isUserMutedXUsername = async (groupId, xUsername) => {
-  try {
-    const doc = await db.collection('mutedUsers').doc(`${groupId}_${xUsername.toLowerCase()}`).get();
-    if (doc.exists) {
-      const data = doc.data();
-      const expiresAt = new Date(data.expiresAt);
-      if (expiresAt > new Date()) {
-        return true;
-      } else {
-        // Delete expired mute
-        await db.collection('mutedUsers').doc(`${groupId}_${xUsername.toLowerCase()}`).delete();
-        return false;
-      }
-    }
-    return false;
-  } catch (error) {
-    console.error('Error checking muted user:', error);
-    return false;
-  }
-};
-
-// ============= MESSAGE MANAGEMENT FUNCTIONS =============
-const deleteBotMessage = async (ctx, groupId, userId) => {
-  try {
-    const groupData = await getGroupData(groupId);
-    const userData = groupData.userLinks.get(userId);
-    
-    if (userData && userData.botMessageId) {
-      await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
-      userData.botMessageId = null;
-      await saveGroupData(groupId, groupData);
-    }
-  } catch (error) {
-    console.error('Error deleting bot message:', error);
-  }
-};
-
-// ============= CRON JOB FUNCTIONS =============
-const startSlotReminderJob = (ctx, groupId) => {
-  const job = cron.schedule(`*/${PIN_INTERVAL} * * * *`, async () => {
-    const currentGroupData = await getGroupData(groupId);
-    if (currentGroupData.state === BOT_STATES.SLOT_OPEN && !currentGroupData.locked) {
-      try {
-        const reminderMsg = await ctx.telegram.sendMessage(groupId, 'keep dropping your X links!');
-        
-        // Unpin previous message
-        if (currentGroupData.currentPinnedMessageId) {
-          try {
-            await ctx.telegram.unpinChatMessage(groupId, currentGroupData.currentPinnedMessageId);
-          } catch (error) {
-            console.log('Could not unpin previous message:', error);
-          }
-        }
-        
-        // Pin new message
-        await ctx.telegram.pinChatMessage(groupId, reminderMsg.message_id);
-        
-        // Update current pinned message ID
-        currentGroupData.currentPinnedMessageId = reminderMsg.message_id;
-        await saveGroupData(groupId, currentGroupData);
-      } catch (error) {
-        console.log('Error sending reminder:', error);
-      }
-    }
-  });
-  
-  cronJobs.set(`slot_reminder_${groupId}`, job);
-};
-
-const startCheckingReminderJob = (ctx, groupId) => {
-  const job = cron.schedule(`*/${PIN_INTERVAL} * * * *`, async () => {
-    const currentGroupData = await getGroupData(groupId);
-    if (currentGroupData.state === BOT_STATES.CHECKING && !currentGroupData.locked) {
-      try {
-        // Calculate remaining time
-        const now = new Date();
-        const deadlineDate = new Date(currentGroupData.deadline);
-        const minsLeft = Math.floor((deadlineDate - now) / 60000);
-        const hrs = Math.floor(minsLeft / 60);
-        const mins = minsLeft % 60;
-        const istDate = deadlineDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-
-        // Compose reminder message
-        const reminderMsgText =
-          `⚡ *Complete your task before deadline*\n` +
-          `⏳ *Time Remaining:* ${hrs} hr ${mins} mins\n`;
-
-        // Send reminder
-        const reminderMsg = await ctx.telegram.sendMessage(groupId, reminderMsgText, { parse_mode: "Markdown" });
-
-        // Unpin previous message if exists
-        if (currentGroupData.currentPinnedMessageId) {
-          try {
-            await ctx.telegram.unpinChatMessage(groupId, currentGroupData.currentPinnedMessageId);
-          } catch (error) {
-            console.log('Could not unpin previous message:', error);
-          }
-        }
-
-        // Pin new reminder message
-        await ctx.telegram.pinChatMessage(groupId, reminderMsg.message_id);
-
-        // Update current pinned message ID
-        currentGroupData.currentPinnedMessageId = reminderMsg.message_id;
-        await saveGroupData(groupId, currentGroupData);
-
-      } catch (error) {
-        console.log('Error sending reminder:', error);
-      }
-    }
-  });
-
-  cronJobs.set(`checking_reminder_${groupId}`, job);
-};
-
-
-const stopCronJobs = (groupId) => {
-  const slotJob = cronJobs.get(`slot_reminder_${groupId}`);
-  const checkingJob = cronJobs.get(`checking_reminder_${groupId}`);
-  
-  if (slotJob) {
-    slotJob.stop();
-    cronJobs.delete(`slot_reminder_${groupId}`);
-  }
-  
-  if (checkingJob) {
-    checkingJob.stop();
-    cronJobs.delete(`checking_reminder_${groupId}`);
-  }
-};
-// ============= UPDATE saveMutedUserToFirebase FUNCTION =============
 const saveMutedUserToFirebase = async (groupId, xUsername, tgUsername, mutedBy, reason = '') => {
   try {
-    // First, find the Telegram user ID from group data
     let tgUserId = null;
     const groupData = await getGroupData(groupId);
     
-    // Search for user with this X username
     for (const [uid, userData] of groupData.userLinks.entries()) {
       if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername.toLowerCase()) {
         tgUserId = uid;
@@ -563,12 +403,149 @@ const saveMutedUserToFirebase = async (groupId, xUsername, tgUsername, mutedBy, 
     
     await db.collection('mutedUsers').doc(`${groupId}_${xUsername.toLowerCase()}`).set(muteData);
   } catch (error) {
-    console.error('Error saving muted user to Firebase:', error);
+    console.error('Error saving muted user:', error);
   }
 };
 
+const cleanupExpiredMutes = (groupData) => {
+  const now = new Date();
+  const twoDaysAgo = new Date(now.getTime() - (2 * 24 * 60 * 60 * 1000));
+  
+  for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
+    if (new Date(muteData.mutedAt) < twoDaysAgo) {
+      groupData.mutedXUsernames.delete(xUsername);
+    }
+  }
+};
 
-/// ============= BOT COMMANDS =============
+const muteAllUsers = async (ctx, groupData, groupId) => {
+  let mutedCount = 0;
+  const failedMutes = [];
+
+  // Mute scam users
+  for (const [uid, userData] of groupData.scamUsers.entries()) {
+    const success = await muteUser(ctx, groupData, uid, userData.xUsername, 2 * 24 * 60);
+    if (success) mutedCount++;
+    else failedMutes.push(userData.tgUsername || uid);
+  }
+
+  // Mute SR users
+  for (const [number, data] of groupData.srList.entries()) {
+    const linkData = groupData.userLinks.get(data.userId);
+    const xUsername = linkData ? linkData.xUsername : null;
+    const success = await muteUser(ctx, groupData, data.userId, xUsername, 2 * 24 * 60);
+    if (success) mutedCount++;
+    else failedMutes.push(data.tgUsername || data.userId);
+  }
+
+  await saveGroupData(groupId, groupData);
+  return { mutedCount, failedMutes };
+};
+
+// ============= CRON JOB FUNCTIONS =============
+const startSlotReminderJob = (ctx, groupId) => {
+  const job = cron.schedule(`*/${PIN_INTERVAL} * * * *`, async () => {
+    const currentGroupData = await getGroupData(groupId);
+    if (currentGroupData.state === BOT_STATES.SLOT_OPEN && !currentGroupData.locked) {
+      try {
+        const reminderMsg = await ctx.telegram.sendMessage(groupId, 'keep dropping your X links!');
+        
+        if (currentGroupData.currentPinnedMessageId) {
+          try {
+            await ctx.telegram.unpinChatMessage(groupId, currentGroupData.currentPinnedMessageId);
+          } catch (error) {
+            console.log('Could not unpin previous message:', error);
+          }
+        }
+        
+        await ctx.telegram.pinChatMessage(groupId, reminderMsg.message_id);
+        currentGroupData.currentPinnedMessageId = reminderMsg.message_id;
+        await saveGroupData(groupId, currentGroupData);
+      } catch (error) {
+        console.log('Error sending reminder:', error);
+      }
+    }
+  });
+  
+  cronJobs.set(`slot_reminder_${groupId}`, job);
+};
+
+const startCheckingReminderJob = (ctx, groupId) => {
+  const job = cron.schedule(`*/${PIN_INTERVAL} * * * *`, async () => {
+    const currentGroupData = await getGroupData(groupId);
+    if (currentGroupData.state === BOT_STATES.CHECKING && !currentGroupData.locked) {
+      try {
+        const now = new Date();
+        const deadlineDate = new Date(currentGroupData.deadline);
+        const minsLeft = Math.floor((deadlineDate - now) / 60000);
+        const hrs = Math.floor(minsLeft / 60);
+        const mins = minsLeft % 60;
+        const istDate = deadlineDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+        const reminderMsgText =
+          `⚡ *Complete your task before deadline*\n` +
+          `⏳ *Time Remaining:* ${hrs} hr ${mins} mins\n`;
+
+        const reminderMsg = await ctx.telegram.sendMessage(groupId, reminderMsgText, { parse_mode: "Markdown" });
+
+        if (currentGroupData.currentPinnedMessageId) {
+          try {
+            await ctx.telegram.unpinChatMessage(groupId, currentGroupData.currentPinnedMessageId);
+          } catch (error) {
+            console.log('Could not unpin previous message:', error);
+          }
+        }
+
+        await ctx.telegram.pinChatMessage(groupId, reminderMsg.message_id);
+        currentGroupData.currentPinnedMessageId = reminderMsg.message_id;
+        await saveGroupData(groupId, currentGroupData);
+
+      } catch (error) {
+        console.log('Error sending reminder:', error);
+      }
+    }
+  });
+
+  cronJobs.set(`checking_reminder_${groupId}`, job);
+};
+
+const stopCronJobs = (groupId) => {
+  const slotJob = cronJobs.get(`slot_reminder_${groupId}`);
+  const checkingJob = cronJobs.get(`checking_reminder_${groupId}`);
+  
+  if (slotJob) {
+    slotJob.stop();
+    cronJobs.delete(`slot_reminder_${groupId}`);
+  }
+  
+  if (checkingJob) {
+    checkingJob.stop();
+    cronJobs.delete(`checking_reminder_${groupId}`);
+  }
+};
+
+// ============= HELPER FUNCTIONS =============
+function getDurationText(minutes) {
+  if (minutes < 60) {
+    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+  } else if (minutes < 24 * 60) {
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes === 0) {
+      return `${hours} hour${hours !== 1 ? 's' : ''}`;
+    }
+    return `${hours} hour${hours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
+  } else {
+    const days = Math.floor(minutes / (24 * 60));
+    const remainingHours = Math.floor((minutes % (24 * 60)) / 60);
+    if (remainingHours === 0) {
+      return `${days} day${days !== 1 ? 's' : ''}`;
+    }
+    return `${days} day${days !== 1 ? 's' : ''} ${remainingHours} hour${remainingHours !== 1 ? 's' : ''}`;
+  }
+}
+
+// ============= BOT COMMANDS =============
 bot.command('open', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -594,17 +571,14 @@ bot.command('open', requireAllowedGroup, async (ctx) => {
   groupData.state = BOT_STATES.SLOT_OPEN;
   groupData.locked = false;
   
-  // Update group title
   try {
     const currentTitle = ctx.chat.title;
     const baseTitle = currentTitle.replace(/\s*\|\|.*/, '');
     await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || OPEN`);
-
   } catch (error) {
     console.log('No permission to change group name');
   }
   
-  // Set permissions for slot phase
   await ctx.telegram.setChatPermissions(ctx.chat.id, {
     can_send_messages: true,
     can_send_other_messages: false,
@@ -616,7 +590,6 @@ bot.command('open', requireAllowedGroup, async (ctx) => {
   });
   
   await saveGroupData(groupId, groupData);
-
 
   const welcomeMsg = `🎰 Slot opened! Members can now drop their X links.\n\n` +
     `📌 Rules:\n` +
@@ -634,12 +607,217 @@ bot.command('open', requireAllowedGroup, async (ctx) => {
   
   startSlotReminderJob(ctx, groupId);
 });
-// ============= RULES COMMAND =============
+
+bot.command('check', requireAllowedGroup, async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  let groupData = await getGroupData(groupId);
+
+  if (groupData.state !== BOT_STATES.SLOT_OPEN) {
+    return ctx.reply('No active slot session. Use /open first.');
+  }
+  
+  const trackingLink = await getTrackingLink(groupId);
+  groupData.state = BOT_STATES.CHECKING;
+  groupData.locked = false;
+
+  try {
+    const currentTitle = ctx.chat.title;
+    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || TRACKING`);
+  } catch (error) {
+    console.log('No permission to change group name');
+  }
+
+  await ctx.telegram.setChatPermissions(ctx.chat.id, {
+    can_send_messages: false,
+    can_send_videos: true,
+    can_send_photos: true
+  });
+
+  // Deadline calculation (1hr 30mins)
+  const now = new Date();
+  const deadlineDate = new Date(now.getTime() + 90 * 60 * 1000);
+  const istDate = deadlineDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  const minsLeft = Math.floor((deadlineDate - now) / 60000);
+  const hrs = Math.floor(minsLeft / 60);
+  const mins = minsLeft % 60;
+
+  const checkMsg =
+    `<b>⚡ Checking phase Started</b>\n` +
+    `Drop the video proof of screen record here with AD, or only proof\n\n` +
+    `🔗 ${trackingLink}\n\n` +
+    `⏳ <b>Deadline:</b> ${hrs} hr ${mins} mins\n` +
+    `🕒 <b>Ends At:</b> ${istDate} IST\n\n` +
+    `📤 <b>SEND AD, ALL DONE, DONE WITH SR PROOF</b>\n`;
+
+  const sentMessage = await ctx.reply(checkMsg, { parse_mode: "HTML" });
+  await ctx.pinChatMessage(sentMessage.message_id);
+
+  groupData.currentPinnedMessageId = sentMessage.message_id;
+  groupData.deadline = deadlineDate.getTime();
+  await saveGroupData(groupId, groupData);
+
+  // Auto-lock after deadline
+  setTimeout(async () => {
+    const updated = await getGroupData(groupId);
+    if (updated.state === BOT_STATES.CHECKING) {
+      updated.locked = true;
+      updated.state = BOT_STATES.LOCKED;
+      await saveGroupData(groupId, updated);
+
+      await ctx.telegram.setChatPermissions(ctx.chat.id, {
+        can_send_messages: false,
+        can_send_media_messages: false,
+        can_send_polls: false,
+        can_send_other_messages: false,
+        can_add_web_page_previews: false,
+        can_change_info: false,
+        can_invite_users: false,
+        can_pin_messages: false
+      });
+
+      await ctx.reply("🔒 Group locked — checking time is over.");
+      
+      try {
+        await muteAllUsers(ctx, updated, groupId);
+        await ctx.reply("🔇 All scam users + SR users have been automatically muted for 2 days.");
+      } catch (err) {
+        console.error("MuteAll auto-exec failed:", err);
+      }
+    }
+  }, 90 * 60 * 1000);
+
+  startCheckingReminderJob(ctx, groupId);
+});
+
+bot.command('loc', requireAllowedGroup, async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  let groupData = await getGroupData(groupId);
+
+  if (groupData.state !== BOT_STATES.SLOT_OPEN && groupData.state !== BOT_STATES.CHECKING) {
+    return ctx.reply('No active slot or checking phase to lock.');
+  }
+
+  try {
+    await ctx.telegram.setChatPermissions(ctx.chat.id, {
+      can_send_messages: false,
+      can_send_media_messages: false,
+      can_send_polls: false,
+      can_send_other_messages: false,
+      can_add_web_page_previews: false,
+      can_change_info: false,
+      can_invite_users: false,
+      can_pin_messages: false
+    });
+
+    groupData.locked = true;
+    await saveGroupData(groupId, groupData);
+    stopCronJobs(groupId);
+
+    try {
+      const currentTitle = ctx.chat.title;
+      const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+      await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || LOCKED`);
+    } catch (error) {
+      console.log('No permission to change group name:', error);
+    }
+
+    if (groupData.currentPinnedMessageId) {
+      try {
+        await ctx.telegram.unpinChatMessage(groupId, groupData.currentPinnedMessageId);
+        groupData.currentPinnedMessageId = null;
+        await saveGroupData(groupId, groupData);
+      } catch (error) {
+        console.log('Could not unpin previous message:', error);
+      }
+    }
+
+    await ctx.reply('🔒 Group locked.\n Timeline is getting updated..\n Only Admins can send messages.');
+    await ctx.replyWithPhoto({ source: 'close.png' });
+
+  } catch (error) {
+    console.error('Error locking group:', error);
+  }
+});
+
+bot.command('end', async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  let groupData = await getGroupData(groupId);
+  
+  // Delete all bot messages
+  for (const [userId, userData] of groupData.userLinks.entries()) {
+    if (userData.botMessageId) {
+      try {
+        await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
+      } catch (error) {
+        console.error('Error deleting bot message on /end:', error);
+      }
+    }
+  }
+  
+  groupData.state = BOT_STATES.CLOSED;
+  
+  try {
+    const currentTitle = ctx.chat.title;
+    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
+    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || CLOSED`);
+  } catch (error) {
+    console.log('No permission to change group name');
+  }
+  
+  await ctx.telegram.setChatPermissions(ctx.chat.id, {
+    can_send_messages: false,
+    can_send_media_messages: false,
+    can_send_other_messages: false,
+    can_add_web_page_previews: false,
+    can_send_polls: false,
+    can_invite_users: false,
+    can_pin_messages: false,
+    can_change_info: false
+  });
+  
+  stopCronJobs(groupId);
+  
+  // Clear all data except muted users
+  groupData.userLinks.clear();
+  groupData.safeUsers.clear();
+  groupData.scamUsers.clear();
+  groupData.srList.clear();
+  groupData.mutedUsers.clear();
+  groupData.linkCount = 0;
+  groupData.srCounter = 1;
+  groupData.currentPinnedMessageId = null;
+  groupData.locked = false;
+  
+  await saveGroupData(groupId, groupData);
+  ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared.');
+});
+
 bot.command('rl', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
-  // Only admins can use /rl
   if (!await isAdmin(ctx, userId)) {
     await ctx.deleteMessage();
     return;
@@ -672,12 +850,11 @@ bot.command('rl', requireAllowedGroup, async (ctx) => {
 
   await ctx.reply(rulesMessage, { parse_mode: "Markdown" });
 });
-// ============= HELP COMMAND (ADMIN ONLY) =============
-bot.command('help', requireAllowedGroup, async (ctx) => {
+
+bot.command('help', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
-  // Only admins can use /help
   if (!await isAdmin(ctx, userId)) {
     await ctx.deleteMessage();
     return;
@@ -715,9 +892,6 @@ bot.command('help', requireAllowedGroup, async (ctx) => {
 ━━━━━━━━━━━━━━━━━━
 👮 *MODERATION*
 ━━━━━━━━━━━━━━━━━━
-• /mute [duration] [reason] - Mute user
-  Examples: /mute 30, /mute 2h, /mute 1d Spamming
-• /unmute - Unmute user
 • /ban [reason] - Ban user
 • /unban - Unban user
 • /muteall - Mute all scam+SR users (2 days)
@@ -738,15 +912,6 @@ bot.command('help', requireAllowedGroup, async (ctx) => {
 • /requeststats - Request system stats
 
 ━━━━━━━━━━━━━━━━━━
-📝 *USAGE EXAMPLES*
-━━━━━━━━━━━━━━━━━━
-• /mute @username 30 Spamming
-• /xmute @twitteruser 2h
-• /xban @scammer Duplicate account
-• /ad 3 (approves SR user #3)
-• /link (reply to user to see their X link)
-
-━━━━━━━━━━━━━━━━━━
 ⚠️ *IMPORTANT NOTES*
 ━━━━━━━━━━━━━━━━━━
 • Checking phase auto-locks after 1.5 hours
@@ -755,185 +920,14 @@ bot.command('help', requireAllowedGroup, async (ctx) => {
 • Admin messages are ignored by bot
 • Most commands require replying to user
 
-━━━━━━━━━━━━━━━━━━
 ⏰ *TIMING REFERENCE*
-━━━━━━━━━━━━━━━━━━
 • 30 = 30 minutes
 • 2h = 2 hours
 • 1d = 1 day
-• 2d = 2 days (X bans)
-
-*Type any command for specific usage help.*`;
+• 2d = 2 days (X bans)`;
 
   await ctx.reply(helpMessage, { parse_mode: "Markdown" });
 });
-
-
-bot.command('loc', requireAllowedGroup, async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-
-  let groupData = await getGroupData(groupId);
-
-  if (groupData.state !== BOT_STATES.SLOT_OPEN && groupData.state !== BOT_STATES.CHECKING) {
-    return ctx.reply('No active slot or checking phase to lock.');
-  }
-
-  try {
-    // 🔥 LOCK THE GROUP FOR EVERYONE EXCEPT ADMINS
-    // Set ALL permissions to false to completely restrict
-    await ctx.telegram.setChatPermissions(ctx.chat.id, {
-      can_send_messages: false,
-      can_send_media_messages: false,
-      can_send_polls: false,
-      can_send_other_messages: false,
-      can_add_web_page_previews: false,
-      can_change_info: false,
-      can_invite_users: false,
-      can_pin_messages: false
-    });
-
-    // Save lock state
-    groupData.locked = true;
-    await saveGroupData(groupId, groupData);
-
-    // Stop cron jobs
-    stopCronJobs(groupId);
-
-    // Update group title to show locked status
-    try {
-      const currentTitle = ctx.chat.title;
-      const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
-      await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || LOCKED`);
-    } catch (error) {
-      console.log('No permission to change group name:', error);
-    }
-
-    // Unpin any existing pinned message
-    if (groupData.currentPinnedMessageId) {
-      try {
-        await ctx.telegram.unpinChatMessage(groupId, groupData.currentPinnedMessageId);
-        groupData.currentPinnedMessageId = null;
-        await saveGroupData(groupId, groupData);
-      } catch (error) {
-        console.log('Could not unpin previous message:', error);
-      }
-    }
-
-    await ctx.reply('🔒 Group locked.\n Timeline is getting updated..\n Only Admins can send messages.');
-    await ctx.replyWithPhoto({ source: 'close.png' });
-
-  } catch (error) {
-    console.error('Error locking group:', error);
-     }
-});
-
-bot.command('check', requireAllowedGroup, async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-
-  let groupData = await getGroupData(groupId);
-
-  if (groupData.state !== BOT_STATES.SLOT_OPEN) {
-    return ctx.reply('No active slot session. Use /open first.');
-  }
-  const trackingLink = await getTrackingLink();
-  groupData.state = BOT_STATES.CHECKING;
-  groupData.locked = false;
-
-  // Update group title
-  try {
-    const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || TRACKING`);
-
-  } catch (error) {
-    console.log('No permission to change group name');
-  }
-
-  // Allow only media during checking
-  await ctx.telegram.setChatPermissions(ctx.chat.id, {
-    can_send_messages: false,
-    can_send_videos: true,
-    can_send_photos: true
-  });
-
-  await saveGroupData(groupId, groupData);
-
-  // -----------------------------------------
-  // DEADLINE CALCULATION (1hr 30mins)
-  // -----------------------------------------
-  const now = new Date();
-  const deadlineDate = new Date(now.getTime() + 90 * 60 * 1000); // 1hr 30mins
-
-  // Convert to IST
-  const istDate = deadlineDate.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-
-  // Timer text
-  const minsLeft = Math.floor((deadlineDate - now) / 60000);
-  const hrs = Math.floor(minsLeft / 60);
-  const mins = minsLeft % 60;
-
-const checkMsg =
-  `<b>⚡ Checking phase Started</b>\n` +
-  `Drop the video proof of screen record here with AD, or only proof\n\n` +
-  `🔗 ${trackingLink}\n\n` +
-  `⏳ <b>Deadline:</b> ${hrs} hr ${mins} mins\n` +
-  `🕒 <b>Ends At:</b> ${istDate} IST\n\n` +
-  `📤 <b>SEND AD, ALL DONE, DONE WITH SR PROOF</b>\n`;
-
-// Then change the reply to use HTML:
-const sentMessage = await ctx.reply(checkMsg, { parse_mode: "HTML" });
-  await ctx.pinChatMessage(sentMessage.message_id);
-
-  groupData.currentPinnedMessageId = sentMessage.message_id;
-  groupData.deadline = deadlineDate.getTime();
-  await saveGroupData(groupId, groupData);
-
-  // -----------------------------------------
-  // AUTO-LOCK + AUTO-MUTEALL AFTER DEADLINE
-  // -----------------------------------------
-  setTimeout(async () => {
-    const updated = await getGroupData(groupId);
-
-    // Only apply if still in CHECKING state
-    if (updated.state === BOT_STATES.CHECKING) {
-      updated.locked = true;
-      updated.state = BOT_STATES.LOCKED;
-      await saveGroupData(groupId, updated);
-
-      // Lock group
-      await ctx.telegram.setChatPermissions(ctx.chat.id, {
-      });
-
-      await ctx.reply("🔒 Group locked — checking time is over.");
-      
-
-      // -------------------------------------
-      // AUTO CALL MUTEALL
-      // -------------------------------------
-      try {
-        await muteAllUsers(ctx, updated, groupId);
-        await ctx.reply("🔇 All scam users + SR users have been automatically muted for 2 days.");
-      } catch (err) {
-        console.error("MuteAll auto-exec failed:", err);
-      }
-    }
-  }, 90 * 60 * 1000);
-
-  // Start reminders
-  startCheckingReminderJob(ctx, groupId);
-});                                                                                                                  
 
 
 bot.command('total', requireAllowedGroup, async (ctx) => {
@@ -1047,7 +1041,7 @@ bot.command('list', requireAllowedGroup, async (ctx) => {
   }
 });
 
-// ============= SIMPLIFIED CLEAR COMMAND =============
+// ============= IMPROVED CLEAR COMMAND =============
 bot.command('clear', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -1058,45 +1052,76 @@ bot.command('clear', async (ctx) => {
   }
   
   try {
-    const progressMsg = await ctx.reply('🧹 Starting to clear recent messages...');
+    const commandMessageId = ctx.message.message_id;
+    const progressMsg = await ctx.reply('🧹 Starting to clear messages... (0 deleted)');
     
     let deletedCount = 0;
-    const MAX_MESSAGES = 1000; // Clear last 100 messages max
+    const MAX_ATTEMPTS = 500; // Maximum messages to attempt deleting
+    const BATCH_SIZE = 20; // Delete in batches
+    const DELAY_MS = 2000; // Delay between batches
     
-    // Try to delete messages in reverse order
-    for (let i = 1; i <= MAX_MESSAGES; i++) {
-      try {
-        const messageId = ctx.message.message_id - i;
-        if (messageId > 0) {
-          await ctx.telegram.deleteMessage(groupId, messageId);
+    // Start from the most recent message before the command
+    let currentMessageId = commandMessageId - 1;
+    
+    while (currentMessageId > 0 && deletedCount < MAX_ATTEMPTS) {
+      let batchDeleted = 0;
+      
+      // Try to delete a batch of messages
+      for (let i = 0; i < BATCH_SIZE && currentMessageId > 0; i++) {
+        try {
+          await ctx.telegram.deleteMessage(groupId, currentMessageId);
           deletedCount++;
+          batchDeleted++;
+          currentMessageId--;
+        } catch (error) {
+          if (error.response && error.response.error_code === 400) {
+            // Message too old or doesn't exist, skip it
+            currentMessageId--;
+            continue;
+          } else {
+            // Other error (permission, rate limit), wait and try again
+            console.log(`Delete error at message ${currentMessageId}:`, error.message);
+            break;
+          }
         }
-      } catch (error) {
-        // Stop when we hit messages we can't delete
+      }
+      
+      // Update progress every batch
+      if (deletedCount > 0 && (deletedCount % 20 === 0 || batchDeleted === 0)) {
+        try {
+          await ctx.telegram.editMessageText(
+            groupId,
+            progressMsg.message_id,
+            null,
+            `🧹 Clearing... ${deletedCount} messages deleted so far`
+          );
+        } catch (error) {
+          console.log('Could not update progress:', error.message);
+        }
+      }
+      
+      // If we couldn't delete any in this batch, we've hit the limit
+      if (batchDeleted === 0) {
         break;
       }
       
-      // Small delay to avoid rate limits
-      if (i % 10 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait between batches to avoid rate limits
+      if (currentMessageId > 0 && deletedCount < MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
       }
     }
     
-    // Update progress message
-    await ctx.telegram.editMessageText(
-      groupId,
-      progressMsg.message_id,
-      null,
-      `✅ Cleared ${deletedCount} recent messages.`
-    );
+    // Final result
+    const resultMsg = await ctx.reply(`✅ Successfully cleared ${deletedCount} messages.`);
     
-    // Auto-delete the result after 5 seconds
+    // Clean up after 5 seconds
     setTimeout(async () => {
       try {
-        await ctx.deleteMessage();
+        await ctx.telegram.deleteMessage(groupId, commandMessageId);
         await ctx.telegram.deleteMessage(groupId, progressMsg.message_id);
+        await ctx.telegram.deleteMessage(groupId, resultMsg.message_id);
       } catch (error) {
-        console.log('Could not clean up clear command:', error);
+        console.log('Cleanup error:', error.message);
       }
     }, 5000);
     
@@ -1105,7 +1130,6 @@ bot.command('clear', async (ctx) => {
     await ctx.reply('❌ Error clearing messages. I may not have delete permissions.');
   }
 });
-
 bot.command('link', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -1375,6 +1399,103 @@ bot.command('ad', requireAllowedGroup, async (ctx) => {
     ctx.reply('❌ User not found in SR list.');
   }
 });
+// ============= ADS COMMAND (Add to safe list during slot phase) =============
+bot.command('ads', requireAllowedGroup, async (ctx) => {
+  const groupId = ctx.chat.id;
+  const userId = ctx.from.id;
+  
+  // Only admins can use /ads
+  if (!await isAdmin(ctx, userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+  
+  let groupData = await getGroupData(groupId);
+  
+  // Check if we're in slot phase
+  if (groupData.state !== BOT_STATES.CHECKING) {
+    return ctx.reply('❌ /ads command only works during slot phase (when slot is OPEN).');
+  }
+  
+  // Must reply to a user's message
+  if (!ctx.message.reply_to_message) {
+    return ctx.reply('❌ Please reply to a user\'s message with /ads to add them to safe list.');
+  }
+  
+  const targetUser = ctx.message.reply_to_message.from;
+  const targetUserId = targetUser.id.toString();
+  
+  // Check if target user is admin
+  if (await isAdmin(ctx, targetUser.id)) {
+    return ctx.reply('❌ Cannot use /ads on administrators.');
+  }
+  
+  // Check if replied message has a photo
+  if (!ctx.message.reply_to_message.photo) {
+    return ctx.reply('❌ Please reply to a user\'s PHOTO message with /ads.');
+  }
+  
+  // Check if user has submitted an X link
+  if (!groupData.userLinks.has(targetUserId)) {
+    return ctx.reply(`❌ @${targetUser.username || targetUser.first_name} has not submitted any X link yet.`);
+  }
+  
+  // Get user's X link data
+  const userLinkData = groupData.userLinks.get(targetUserId);
+  
+  // Check if user is already in safe list
+  if (groupData.safeUsers.has(targetUserId)) {
+    return ctx.reply(`✅ @${targetUser.username || targetUser.first_name} is already in the safe list.`);
+  }
+  
+  // Remove from scam list if exists
+  if (groupData.scamUsers.has(targetUserId)) {
+    groupData.scamUsers.delete(targetUserId);
+  }
+  
+  // Remove from SR list if exists
+  let removedFromSR = false;
+  for (const [number, data] of groupData.srList.entries()) {
+    if (data.userId === targetUserId) {
+      groupData.srList.delete(number);
+      removedFromSR = true;
+      break;
+    }
+  }
+  
+  // Add to safe users list
+  groupData.safeUsers.set(targetUserId, {
+    tgUsername: targetUser.username || targetUser.first_name,
+    tgUserId: targetUserId,
+    xUsername: userLinkData.xUsername,
+    timestamp: new Date(),
+    approved: true,
+    approvedBy: ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name,
+    approvedAt: new Date(),
+    submittedLink: userLinkData.link
+  });
+  
+  await saveGroupData(groupId, groupData);
+  
+  // Send confirmation message
+  const adminName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+  const userName = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
+  
+  let confirmationMsg = `✅ ${userName} has been added to safe list.\n`;
+  
+  if (removedFromSR) {
+    confirmationMsg += `📋 Removed from SR list\n`;
+  }
+ 
+  await ctx.reply(confirmationMsg);
+  
+  // Optional: Delete the admin's command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    console.log('Could not delete command message:', error.message);
+  }
+});
 
 bot.command('muteall', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
@@ -1435,194 +1556,8 @@ bot.command('muteall', requireAllowedGroup, async (ctx) => {
   ctx.reply(replyMsg);
 });
 
-// ============= MUTE COMMAND WITH DURATION =============
-bot.command('mute', requireAllowedGroup, async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  const args = ctx.message.text.split(' ');
-  
-  if (args.length < 2) {
-    return ctx.reply('Usage: /mute [duration] [reason]\n\nExamples:\n/mute 30 - Mute for 30 minutes\n/mute 2h - Mute for 2 hours\n/mute 1d - Mute for 1 day\n/mute @username 30\n/mute 30 Spamming\n\nReply to a user or mention username/ID');
-  }
-  
-  let targetUser = null;
-  let durationStr = '';
-  let reason = '';
-  
-  // Try to get target user from reply
-  if (ctx.message.reply_to_message) {
-    targetUser = ctx.message.reply_to_message.from;
-    
-    // Parse duration from arguments (skip command name)
-    if (args.length >= 2) {
-      durationStr = args[1];
-      reason = args.slice(2).join(' ');
-    }
-  } else {
-    // Try to parse from arguments
-    const mentionMatch = args[1].match(/^@(\w+)$/) || args[1].match(/^(\d+)$/);
-    
-    if (mentionMatch && args.length >= 3) {
-      // Format: /mute @username duration reason or /mute 123456 duration reason
-      try {
-        const chatMember = await ctx.telegram.getChatMember(groupId, mentionMatch[1]);
-        targetUser = chatMember.user;
-        durationStr = args[2];
-        reason = args.slice(3).join(' ');
-      } catch (error) {
-        return ctx.reply('❌ User not found in this group.');
-      }
-    } else {
-      // Format: /mute duration reason (target is first argument if it's a duration)
-      if (/^\d+[mhd]?$/.test(args[1])) {
-        durationStr = args[1];
-        reason = args.slice(2).join(' ');
-        
-        // Check if first arg after command is a user mention
-        if (args[2] && (args[2].startsWith('@') || /^\d+$/.test(args[2]))) {
-          try {
-            const identifier = args[2].replace('@', '');
-            const chatMember = await ctx.telegram.getChatMember(groupId, identifier);
-            targetUser = chatMember.user;
-            durationStr = args[1];
-            reason = args.slice(3).join(' ');
-          } catch (error) {
-            // If can't find user, use current message's target
-          }
-        }
-      }
-    }
-  }
-  
-  // If still no target user, try to get from entities
-  if (!targetUser) {
-    targetUser = await getTargetUser(ctx);
-  }
-  
-  if (!targetUser) {
-    return ctx.reply('❌ Please reply to a user, mention @username, or provide user ID.\n\nUsage: /mute [duration] [reason]');
-  }
-  
-  // Check if trying to mute admin
-  if (await isAdmin(ctx, targetUser.id)) {
-    return ctx.reply('❌ Cannot mute an administrator.');
-  }
-  
-  // Parse duration
-  let durationMinutes = 30; // Default 30 minutes
-  
-  if (durationStr) {
-    if (durationStr.endsWith('h')) {
-      const hours = parseInt(durationStr);
-      durationMinutes = hours * 60;
-    } else if (durationStr.endsWith('d')) {
-      const days = parseInt(durationStr);
-      durationMinutes = days * 24 * 60;
-    } else if (durationStr.endsWith('m')) {
-      durationMinutes = parseInt(durationStr);
-    } else {
-      durationMinutes = parseInt(durationStr) || 30;
-    }
-  }
-  
-  // Maximum mute duration (30 days)
-  const MAX_DURATION = 30 * 24 * 60; // 30 days in minutes
-  if (durationMinutes > MAX_DURATION) {
-    durationMinutes = MAX_DURATION;
-  }
-  
-  // Get group data
-  let groupData = await getGroupData(groupId);
-  
-  // Mute the user
-  const success = await muteUser(ctx, groupData, targetUser.id, null, durationMinutes);
-  
-  if (success) {
-    const durationText = getDurationText(durationMinutes);
-    const userName = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
-    
-    let message = `🔇 ${userName} has been muted for ${durationText}`;
-    if (reason) {
-      message += `\n📝 Reason: ${reason}`;
-    }
-    message += `\n👤 Muted by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`;
-    
-    await ctx.reply(message);
-    await saveGroupData(groupId, groupData);
-  } else {
-    await ctx.reply('❌ Failed to mute user. I might not have enough permissions.');
-  }
-});
 
-// ============= UNMUTE COMMAND =============
-bot.command('unmute', requireAllowedGroup, async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  let targetUser = null;
-  
-  // Try to get target user from reply
-  if (ctx.message.reply_to_message) {
-    targetUser = ctx.message.reply_to_message.from;
-  } else {
-    // Try to get from arguments or entities
-    targetUser = await getTargetUser(ctx);
-  }
-  
-  if (!targetUser) {
-    return ctx.reply('❌ Please reply to a user, mention @username, or provide user ID.\n\nUsage: /unmute @username');
-  }
-  
-  try {
-    // Restore user permissions
-    await ctx.restrictChatMember(targetUser.id, {
-      permissions: {
-        can_send_messages: true,
-        can_send_media_messages: true,
-        can_send_polls: true,
-        can_send_other_messages: true,
-        can_add_web_page_previews: true,
-        can_change_info: false,
-        can_invite_users: false,
-        can_pin_messages: false
-      },
-      until_date: 0
-    });
-    
-    // Remove from muted lists
-    let groupData = await getGroupData(groupId);
-    groupData.mutedUsers.delete(targetUser.id.toString());
-    
-    // Remove from muted X usernames if exists
-    for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
-      if (muteData.tgUserId === targetUser.id) {
-        groupData.mutedXUsernames.delete(xUsername);
-      }
-    }
-    
-    await saveGroupData(groupId, groupData);
-    
-    const userName = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
-    await ctx.reply(`🔊 ${userName} has been unmuted.\n👤 Unmuted by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`);
-    
-  } catch (error) {
-    console.error('Error unmuting user:', error);
-    await ctx.reply('❌ Failed to unmute user. I might not have enough permissions.');
-  }
-});
-
-// ============= BAN COMMAND =============
+// ============= IMPROVED BAN COMMAND =============
 bot.command('ban', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -1632,24 +1567,41 @@ bot.command('ban', requireAllowedGroup, async (ctx) => {
     return;
   }
   
-  const args = ctx.message.text.split(' ');
+  const args = ctx.message.text.split(/\s+/).filter(arg => arg.trim());
   let targetUser = null;
   let reason = '';
   
   // Try to get target user from reply
-  if (ctx.message.reply_to_message) {
+  if (ctx.message.reply_to_message && ctx.message.reply_to_message.from) {
     targetUser = ctx.message.reply_to_message.from;
     reason = args.slice(1).join(' ');
   } else {
-    // Try to get from arguments or entities
+    // Try to get from arguments
     targetUser = await getTargetUser(ctx);
     if (targetUser) {
-      reason = args.slice(2).join(' ');
+      // Extract reason (skip command and user identifier)
+      let foundUserIndex = -1;
+      for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+        if (arg.startsWith('@') || /^\d+$/.test(arg)) {
+          foundUserIndex = i;
+          break;
+        }
+      }
+      
+      if (foundUserIndex !== -1) {
+        reason = args.slice(foundUserIndex + 1).join(' ');
+      }
     }
   }
   
   if (!targetUser) {
     return ctx.reply('❌ Please reply to a user, mention @username, or provide user ID.\n\nUsage: /ban [reason]');
+  }
+  
+  // Check if trying to ban self
+  if (targetUser.id === userId) {
+    return ctx.reply('❌ You cannot ban yourself.');
   }
   
   // Check if trying to ban admin
@@ -1686,7 +1638,7 @@ bot.command('ban', requireAllowedGroup, async (ctx) => {
   }
 });
 
-// ============= UNBAN COMMAND =============
+// ============= IMPROVED UNBAN COMMAND =============
 bot.command('unban', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -1696,20 +1648,38 @@ bot.command('unban', requireAllowedGroup, async (ctx) => {
     return;
   }
   
-  let targetUser = null;
-  
-  // Try to get target user from arguments
-  const args = ctx.message.text.split(' ');
+  const args = ctx.message.text.split(/\s+/).filter(arg => arg.trim());
   
   if (args.length < 2) {
     return ctx.reply('❌ Please provide username or user ID to unban.\n\nUsage: /unban @username or /unban 123456');
   }
   
-  const identifier = args[1].replace('@', '');
+  const identifier = args[1].replace('@', '').trim();
+  
+  if (!identifier) {
+    return ctx.reply('❌ Invalid identifier provided.');
+  }
   
   try {
-    // Try to unban by user ID
-    await ctx.unbanChatMember(identifier);
+    // First try as user ID
+    let userIdToUnban = null;
+    
+    if (/^\d+$/.test(identifier)) {
+      userIdToUnban = parseInt(identifier);
+    } else {
+      // Try to get user ID from username
+      try {
+        // Check if user is in the group (for active members)
+        const chatMember = await ctx.telegram.getChatMember(groupId, identifier);
+        userIdToUnban = chatMember.user.id;
+      } catch (error) {
+        // User not in group, try unbanning with username
+        userIdToUnban = identifier;
+      }
+    }
+    
+    // Try to unban
+    await ctx.unbanChatMember(userIdToUnban);
     
     const userName = args[1].startsWith('@') ? args[1] : `User ID: ${identifier}`;
     await ctx.reply(`✅ ${userName} has been unbanned.\n👤 Unbanned by: ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`);
@@ -1717,7 +1687,7 @@ bot.command('unban', requireAllowedGroup, async (ctx) => {
   } catch (error) {
     console.error('Error unbanning user:', error);
     
-    // Try alternative approach - get user from message
+    // Try alternative approach
     if (ctx.message.reply_to_message && ctx.message.reply_to_message.from) {
       try {
         await ctx.unbanChatMember(ctx.message.reply_to_message.from.id);
@@ -1734,140 +1704,7 @@ bot.command('unban', requireAllowedGroup, async (ctx) => {
   }
 });
 
-// ============= MUTE LIST COMMAND =============
-bot.command('mutelist', async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  let groupData = await getGroupData(groupId);
-  
-  if (groupData.mutedUsers.size === 0 && groupData.mutedXUsernames.size === 0) {
-    return ctx.reply('📋 No users are currently muted.');
-  }
-  
-  let muteList = '🔇 *CURRENTLY MUTED USERS*\n━━━━━━━━━━━━━━━━━━\n\n';
-  let counter = 1;
-  
-  // List temporarily muted users
-  if (groupData.mutedUsers.size > 0) {
-    muteList += '*Temporary Mutes:*\n';
-    const now = Math.floor(Date.now() / 1000);
-    
-    for (const [uid, muteData] of groupData.mutedUsers.entries()) {
-      const remaining = muteData.until - now;
-      if (remaining > 0) {
-        const hours = Math.floor(remaining / 3600);
-        const minutes = Math.floor((remaining % 3600) / 60);
-        
-        const remainingText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-        muteList += `${counter}. ${muteData.tgUsername || 'User'} - ${remainingText} remaining\n`;
-        counter++;
-      }
-    }
-  }
-  
-  // List X username mutes
-  if (groupData.mutedXUsernames.size > 0) {
-    muteList += '\n*X Username Mutes:*\n';
-    const now = new Date();
-    const twoDaysAgo = new Date(now.getTime() - (2 * 24 * 60 * 60 * 1000));
-    
-    for (const [xUsername, muteData] of groupData.mutedXUsernames.entries()) {
-      const muteDate = new Date(muteData.mutedAt);
-      if (muteDate > twoDaysAgo) {
-        const hoursAgo = Math.floor((now - muteDate) / (1000 * 60 * 60));
-        muteList += `${counter}. X: @${xUsername} - ${muteData.tgUsername || 'Unknown'} (${hoursAgo}h ago)\n`;
-        counter++;
-      }
-    }
-  }
-  
-  muteList += `\n━━━━━━━━━━━━━━━━━━\n📊 Total: ${counter - 1} muted entries`;
-  
-  await ctx.reply(muteList, { parse_mode: "Markdown" });
-});
-
-// ============= HELPER FUNCTIONS =============
-
-// Helper function to format duration text
-function getDurationText(minutes) {
-  if (minutes < 60) {
-    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-  } else if (minutes < 24 * 60) {
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    if (remainingMinutes === 0) {
-      return `${hours} hour${hours !== 1 ? 's' : ''}`;
-    }
-    return `${hours} hour${hours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
-  } else {
-    const days = Math.floor(minutes / (24 * 60));
-    const remainingHours = Math.floor((minutes % (24 * 60)) / 60);
-    if (remainingHours === 0) {
-      return `${days} day${days !== 1 ? 's' : ''}`;
-    }
-    return `${days} day${days !== 1 ? 's' : ''} ${remainingHours} hour${remainingHours !== 1 ? 's' : ''}`;
-  }
-}
-
-// Enhanced getTargetUser function (update your existing one)
-async function getTargetUser(ctx) {
-  const msg = ctx.message;
-  
-  // 1️⃣ If replying to a user
-  if (msg.reply_to_message) {
-    return msg.reply_to_message.from;
-  }
-  
-  // 2️⃣ If user mentioned by username like @abc
-  if (msg.entities) {
-    for (let e of msg.entities) {
-      if (e.type === "mention") {
-        const username = msg.text.substring(e.offset + 1, e.offset + e.length); // remove @
-        try {
-          const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, username);
-          return chatMember.user;
-        } catch (err) {
-          console.error('Error getting chat member by mention:', err);
-        }
-      } else if (e.type === "text_mention") {
-        return e.user;
-      }
-    }
-  }
-  
-  // 3️⃣ If user ID or text name after command
-  const parts = msg.text.split(" ");
-  if (parts[1]) {
-    const id = parts[1].replace("@", "");
-    
-    // Check if it's a numeric ID
-    if (/^\d+$/.test(id)) {
-      try {
-        const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, parseInt(id));
-        return chatMember.user;
-      } catch (err) {
-        console.error('Error getting chat member by ID:', err);
-      }
-    } else {
-      // Try as username
-      try {
-        const chatMember = await ctx.telegram.getChatMember(ctx.chat.id, id);
-        return chatMember.user;
-      } catch (err) {
-        console.error('Error getting chat member by username:', err);
-      }
-    }
-  }
-  
-  return null;
-}
-// ============= XMUTE COMMAND (Mute by X username) =============
+// ============= IMPROVED XMUTE COMMAND =============
 bot.command('xmute', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -1877,14 +1714,18 @@ bot.command('xmute', async (ctx) => {
     return;
   }
   
-  const args = ctx.message.text.split(' ');
+  const args = ctx.message.text.split(/\s+/).filter(arg => arg.trim());
   
   if (args.length < 2) {
     return ctx.reply('Usage: /xmute @xusername [duration] [reason]\n\nExamples:\n/xmute @example - Mute for default 30 minutes\n/xmute @example 2h - Mute for 2 hours\n/xmute @example 1d Spamming - Mute for 1 day with reason');
   }
   
   // Extract X username from command
-  const xUsernameInput = args[1].replace('@', '').toLowerCase();
+  const xUsernameInput = args[1].replace('@', '').toLowerCase().trim();
+  if (!xUsernameInput) {
+    return ctx.reply('❌ Please provide a valid X username.\nUsage: /xmute @xusername [duration] [reason]');
+  }
+  
   let durationStr = args[2] || '30';
   let reason = args.slice(3).join(' ');
   
@@ -1951,17 +1792,17 @@ bot.command('xmute', async (ctx) => {
   }
   
   // Parse duration
-  let durationMinutes = 30; // Default 30 minutes
+  let durationMinutes = 30;
   
   if (durationStr) {
     if (durationStr.endsWith('h')) {
-      const hours = parseInt(durationStr);
+      const hours = parseInt(durationStr) || 1;
       durationMinutes = hours * 60;
     } else if (durationStr.endsWith('d')) {
-      const days = parseInt(durationStr);
+      const days = parseInt(durationStr) || 1;
       durationMinutes = days * 24 * 60;
     } else if (durationStr.endsWith('m')) {
-      durationMinutes = parseInt(durationStr);
+      durationMinutes = parseInt(durationStr) || 30;
     } else {
       durationMinutes = parseInt(durationStr) || 30;
     }
@@ -1980,20 +1821,30 @@ bot.command('xmute', async (ctx) => {
     const durationText = getDurationText(durationMinutes);
     const displayName = tgUsername || tgName || `User ID: ${tgUserId}`;
     
-    let message = `🔇 *X Username Mute Applied*\n━━━━━━━━━━━━━━━━━━\n`;
+    // Escape special Markdown characters in the link
+    let safeLink = foundLink || '';
+    if (safeLink) {
+      // Escape underscores and other Markdown special characters
+      safeLink = safeLink.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+    }
+    
+    let message = `🔇 *X Username Mute*\n`;
     message += `🐦 *X Account:* @${xUsernameInput}\n`;
-    message += `👤 *Telegram User:* ${displayName}\n`;
+    message += `👤 *Telegram User:* ${escapeMarkdown(displayName)}\n`;
     message += `⏰ *Duration:* ${durationText}\n`;
     
     if (foundLink) {
-      message += `🔗 *Submitted Link:* ${foundLink.substring(0, 50)}...\n`;
+      // Truncate long links for display
+      const displayLink = safeLink.length > 50 ? safeLink.substring(0, 47) + '...' : safeLink;
+      message += `🔗 *Submitted Link:* ${displayLink}\n`;
     }
     
     if (reason) {
-      message += `📝 *Reason:* ${reason}\n`;
+      message += `📝 *Reason:* ${escapeMarkdown(reason)}\n`;
     }
     
-    message += `━━━━━━━━━━━━━━━━━━\n👮 *Muted by:* ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`;
+    const adminName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+    message += `━━━━━━━━━━━━━━━━━━\n👮 *Muted by:* ${escapeMarkdown(adminName)}`;
     
     await ctx.reply(message, { parse_mode: "Markdown" });
     await saveGroupData(groupId, groupData);
@@ -2020,7 +1871,13 @@ bot.command('xmute', async (ctx) => {
   }
 });
 
-// ============= XUNMUTE COMMAND (Unmute by X username) =============
+// ============= HELPER FUNCTION TO ESCAPE MARKDOWN =============
+function escapeMarkdown(text) {
+  if (!text) return '';
+  return text.toString().replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+}
+
+// ============= IMPROVED XUNMUTE COMMAND =============
 bot.command('xunmute', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -2030,14 +1887,17 @@ bot.command('xunmute', async (ctx) => {
     return;
   }
   
-  const args = ctx.message.text.split(' ');
+  const args = ctx.message.text.split(/\s+/).filter(arg => arg.trim());
   
   if (args.length < 2) {
     return ctx.reply('Usage: /xunmute @xusername\n\nExample: /xunmute @example');
   }
   
   // Extract X username from command
-  const xUsernameInput = args[1].replace('@', '').toLowerCase();
+  const xUsernameInput = args[1].replace('@', '').toLowerCase().trim();
+  if (!xUsernameInput) {
+    return ctx.reply('❌ Please provide a valid X username.\nUsage: /xunmute @xusername');
+  }
   
   // Get group data
   let groupData = await getGroupData(groupId);
@@ -2130,20 +1990,18 @@ bot.command('xunmute', async (ctx) => {
     
     await saveGroupData(groupId, groupData);
     
-    const message = `🔊 *X Username Unmute Applied*\n━━━━━━━━━━━━━━━━━━\n` +
-                   `🐦 *X Account:* @${xUsernameInput}\n` +
-                   `👤 *Telegram User:* ${displayName || 'User'}\n` +
-                   `━━━━━━━━━━━━━━━━━━\n` +
-                   `👮 *Unmuted by:* ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name}`;
+    const message = `🔊 *X Username Unmute*\n` +
+                   `🐦 *X Account:* @${xUsernameInput} tg:${escapeMarkdown(displayName || 'User')}`;
     
     await ctx.reply(message, { parse_mode: "Markdown" });
     
   } catch (error) {
     console.error('Error unmuting user:', error);
-    await ctx.reply('❌ Failed to unmute user. I might not have enough permissions.');
+    await ctx.reply('❌ Error');
   }
 });
-// ============= XBAN COMMAND - BAN BY X USERNAME =============
+
+// ============= IMPROVED XBAN COMMAND =============
 bot.command('xban', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -2153,27 +2011,29 @@ bot.command('xban', async (ctx) => {
     return;
   }
   
-  const args = ctx.message.text.split(' ');
+  const args = ctx.message.text.split(/\s+/).filter(arg => arg.trim());
   
   if (args.length < 2) {
     return ctx.reply('❌ Usage: /xban <x_username> [reason]\n\nExamples:\n/xban username\n/xban username Spamming\n\nThis bans the user who submitted this X username during slot phase.');
   }
   
   const xUsername = args[1].replace('@', '').toLowerCase().trim();
+  if (!xUsername) {
+    return ctx.reply('❌ Please provide a valid X username.');
+  }
+  
   const reason = args.slice(2).join(' ') || 'No reason provided';
   
   let groupData = await getGroupData(groupId);
   
   // Find user by X username in userLinks
   let targetUserId = null;
-  let targetUserData = null;
   let targetTGUsername = null;
   
   // Search through userLinks for matching X username
   for (const [tgUserId, userData] of groupData.userLinks.entries()) {
     if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
       targetUserId = tgUserId;
-      targetUserData = userData;
       targetTGUsername = userData.tgUsername;
       break;
     }
@@ -2184,8 +2044,6 @@ bot.command('xban', async (ctx) => {
     for (const [tgUserId, userData] of groupData.safeUsers.entries()) {
       if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
         targetUserId = tgUserId;
-        const linkData = groupData.userLinks.get(tgUserId);
-        targetUserData = linkData;
         targetTGUsername = userData.tgUsername;
         break;
       }
@@ -2195,7 +2053,6 @@ bot.command('xban', async (ctx) => {
       for (const [tgUserId, userData] of groupData.scamUsers.entries()) {
         if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
           targetUserId = tgUserId;
-          targetUserData = userData;
           targetTGUsername = userData.tgUsername;
           break;
         }
@@ -2214,9 +2071,8 @@ bot.command('xban', async (ctx) => {
   
   try {
     // Get user info from Telegram
-    let chatMember;
     try {
-      chatMember = await ctx.telegram.getChatMember(groupId, targetUserId);
+      await ctx.telegram.getChatMember(groupId, targetUserId);
     } catch (error) {
       return ctx.reply(`❌ User @${xUsername} (TG: ${targetTGUsername}) is not in the group or left already.`);
     }
@@ -2237,17 +2093,12 @@ bot.command('xban', async (ctx) => {
     
     // Save to both local cache and Firebase
     groupData.mutedXUsernames.set(xUsername, muteData);
-    await saveMutedUserToFirebase(groupId, xUsername, targetTGUsername, ctx.from.id);
+    await saveMutedUserToFirebase(groupId, xUsername, targetTGUsername, ctx.from.id, reason);
     
     await saveGroupData(groupId, groupData);
     
-    const adminName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-    const message = `🚫 *X Username Ban Applied*\n\n` +
-      `❌ *X Username:* @${xUsername}\n` +
-      `👤 *Telegram User:* ${targetTGUsername}\n` +
-      `📝 *Reason:* ${reason}\n` +
-      `👮 *Banned by:* ${adminName}\n\n` +
-      `⚠️ This X username is now blocked from future slots.`;
+    const message = `🚫 *X Username Ban*\n\n` +
+      `❌ *X Username:* @${xUsername} tg: ${escapeMarkdown(targetTGUsername)} has been banned.\n`;
     
     await ctx.reply(message, { parse_mode: "Markdown" });
     
@@ -2257,7 +2108,8 @@ bot.command('xban', async (ctx) => {
   }
 });
 
-bot.command('setlink', requireAllowedGroup, async (ctx) => {
+// ============= SETLINK COMMAND =============
+bot.command('setlink', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -2279,10 +2131,10 @@ bot.command('setlink', requireAllowedGroup, async (ctx) => {
     return ctx.reply('❌ Please provide a valid X/Twitter link.');
   }
 
-  const success = await setTrackingLink(newLink);
+  const success = await setTrackingLink(groupId, newLink);
   
   if (success) {
-    await ctx.reply(`✅ Tracking link updated to:\n${newLink}`);
+    await ctx.reply(`✅ Tracking link updated for this group:\n${newLink}\n\nThis link will be shown during checking phase.`);
   } else {
     await ctx.reply('❌ Failed to update tracking link.');
   }
@@ -2353,11 +2205,8 @@ bot.command('xunban', async (ctx) => {
     await saveGroupData(groupId, groupData);
     
     const adminName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-    const message = `✅ *X Username Unban Applied*\n\n` +
-      `✅ *X Username:* @${xUsername}\n` +
-      `👤 *Telegram User:* ${targetTGUsername || 'Unknown'}\n` +
-      `👮 *Unbanned by:* ${adminName}\n\n` +
-      `⚠️ This X username is now allowed in future slots.`;
+    const message = `✅ *X Username Unban *\n\n` +
+      `✅ *X Username:* @${xUsername} has been unbanned.\n`;
     
     await ctx.reply(message, { parse_mode: "Markdown" });
     
@@ -2865,74 +2714,11 @@ bot.command('xbanlist', async (ctx) => {
   await ctx.reply(banList, { parse_mode: "Markdown" });
 });
 
-bot.command('end', async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  let groupData = await getGroupData(groupId);
-  
-  // Delete all bot messages before clearing data
-  for (const [userId, userData] of groupData.userLinks.entries()) {
-    if (userData.botMessageId) {
-      try {
-        await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
-      } catch (error) {
-        console.error('Error deleting bot message on /end:', error);
-      }
-    }
-  }
-  
-  groupData.state = BOT_STATES.CLOSED;
-  
-  // Update group title
-  try {
-    const currentTitle = ctx.chat.title;
-    const baseTitle = currentTitle.replace(/\|\|.*/, '').trim();
-    await ctx.telegram.setChatTitle(ctx.chat.id, `${baseTitle} || CLOSED`);
-    
-  } catch (error) {
-    console.log('No permission to change group name');
-  }
-  
-  // Restrict chat completely
-  await ctx.telegram.setChatPermissions(ctx.chat.id, {
-    can_send_messages: false,
-    can_send_media_messages: false,
-    can_send_other_messages: false,
-    can_add_web_page_previews: false,
-    can_send_polls: false,
-    can_invite_users: false,
-    can_pin_messages: false,
-    can_change_info: false
-  });
-  
-  // Stop all cron jobs
-  stopCronJobs(groupId);
-  
-  // Clear all data except muted users (which are saved in Firebase)
-  groupData.userLinks.clear();
-  groupData.safeUsers.clear();
-  groupData.scamUsers.clear();
-  groupData.srList.clear();
-  groupData.mutedUsers.clear(); // Temporary mutes cleared
-  groupData.linkCount = 0;
-  groupData.srCounter = 1;
-  groupData.currentPinnedMessageId = null;
-  groupData.locked = false;
-  
-  await saveGroupData(groupId, groupData);
-  
-  ctx.reply('✅ Slot ended. All bot messages deleted. All data cleared.');
 
-});
 
 // ============= MESSAGE HANDLERS =============
-bot.on('message', requireAllowedGroup, async (ctx) => {
+// ============= MESSAGE HANDLERS =============
+bot.on('message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.message.text && ctx.message.text.startsWith('/')) return;
   if (ctx.from.id === ctx.botInfo.id) return;
@@ -2940,63 +2726,64 @@ bot.on('message', requireAllowedGroup, async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id.toString();
   
-  // Check if user is admin - COMPLETELY IGNORE ADMINS
   const isUserAdmin = await isAdmin(ctx, userId);
   if (isUserAdmin) {
-    return; // Skip all processing for admins
+    return;
   }
   
   let groupData = await getGroupData(groupId);
-  
   cleanupExpiredMutes(groupData);
   
-  // SLOT PHASE: Handle X links (only regular users)
+  // SLOT PHASE - ALLOW CHATTING, ONLY REGULATE X LINKS
   if (groupData.state === BOT_STATES.SLOT_OPEN) {
     const messageText = ctx.message.text || '';
     
-    // Check if user already dropped a link
+    // If user has already dropped an X link
     if (groupData.userLinks.has(userId)) {
-      // User already dropped a link, delete any new message
-      await ctx.deleteMessage();
-      
-      // If it's another X link, mute them
+      // User already submitted an X link, check if they're trying to submit another
       if (isXLink(messageText)) {
+        await ctx.deleteMessage();
         await muteUser(ctx, groupData, userId, null, 30);
-        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple links detected.`);
+        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple X links detected.`);
         await saveGroupData(groupId, groupData);
       }
+      // If it's not an X link, allow chatting (don't delete or mute)
       return;
     }
     
-    // Handle X link submission
+    // User hasn't submitted an X link yet
     if (isXLink(messageText)) {
       const xUsername = await extractUsernameFromXLink(messageText);
       
       if (!xUsername) {
         await ctx.deleteMessage();
-        await ctx.reply('Invalid X link format. Use format: https://x.com/username/status/123456789');
-        return;
-      }
-      
-      // Check if X username is already in muted list (from Firebase)
-      const isMutedInFirebase = await isUserMutedXUsername(groupId, xUsername);
-      const isMutedInMemory = groupData.mutedXUsernames.has(xUsername.toLowerCase());
-      
-      if (isMutedInFirebase || isMutedInMemory) {
-        await ctx.deleteMessage();
-        await muteUser(ctx, groupData, userId, xUsername, 30);
-        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
+        await muteUser(ctx, groupData, userId, null, 5);
+        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 5 minutes - invalid X link format.`);
         await saveGroupData(groupId, groupData);
         return;
       }
       
-      // Check if another user already used this X username
+      // Check if X username is muted
+      if (xUsername) {
+        const isMutedInFirebase = await isUserMutedXUsername(groupId, xUsername);
+        const isMutedInMemory = groupData.mutedXUsernames.has(xUsername.toLowerCase());
+        
+        if (isMutedInFirebase || isMutedInMemory) {
+          await ctx.deleteMessage();
+          await muteUser(ctx, groupData, userId, xUsername, 30);
+          await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
+          await saveGroupData(groupId, groupData);
+          return;
+        }
+      }
+      
+      // Check for duplicate X username
       let duplicateFound = false;
       let duplicateUserId = null;
       let duplicateUserData = null;
       
       for (const [otherUserId, otherUserData] of groupData.userLinks.entries()) {
-        if (otherUserData.xUsername.toLowerCase() === xUsername.toLowerCase()) {
+        if (otherUserData.xUsername && otherUserData.xUsername.toLowerCase() === xUsername.toLowerCase()) {
           duplicateFound = true;
           duplicateUserId = otherUserId;
           duplicateUserData = otherUserData;
@@ -3006,47 +2793,37 @@ bot.on('message', requireAllowedGroup, async (ctx) => {
       
       if (duplicateFound) {
         await ctx.deleteMessage();
-        
-        // Mute both users
         await muteUser(ctx, groupData, duplicateUserId, xUsername, 30);
         await muteUser(ctx, groupData, userId, xUsername, 30);
-        
         await ctx.reply(`🔇 @${duplicateUserData?.tgUsername || 'User1'} and @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - same X username (@${xUsername}) detected.`);
-        
         await saveGroupData(groupId, groupData);
         return;
       }
       
-      // ✅ DELETE USER'S ORIGINAL MESSAGE
-      await ctx.deleteMessage();
-      
-      // ✅ BOT REPOSTS THE LINK (prevents editing)
-      const userDisplayName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-      const botMessage = await ctx.reply(`${messageText}`);
-      
-      // Save valid link data
+      // Save valid X link
       groupData.userLinks.set(userId, {
         tgUsername: ctx.from.username || ctx.from.first_name,
         tgUserId: userId,
         xUsername: xUsername,
         link: messageText,
-        botMessageId: botMessage.message_id, // Store bot's message ID
+        userMessageId: ctx.message.message_id,
         timestamp: new Date()
       });
       
       groupData.linkCount++;
       await saveGroupData(groupId, groupData);
       
+      // Optional: Send confirmation message
+      // await ctx.reply(`✅ @${ctx.from.username || ctx.from.first_name} X link saved successfully!`);
+      
     } else {
-      // Not an X link, delete it and mute user for 5 minutes
-      await ctx.deleteMessage();
-      await muteUser(ctx, groupData, userId, null, 5);
-      await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 5 minutes - only X links allowed during slot phase.`);
-      await saveGroupData(groupId, groupData);
+      // If it's not an X link, allow chatting (don't delete or mute)
+      // Only regular chatting is allowed
+      return;
     }
   }
   
-  // CHECKING PHASE: Handle media submissions (only regular users)
+ // CHECKING PHASE: Handle media submissions (only regular users)
   else if (groupData.state === BOT_STATES.CHECKING) {
     // Check if user dropped a link in slot phase
     if (!groupData.userLinks.has(userId)) {
@@ -3087,8 +2864,7 @@ bot.on('message', requireAllowedGroup, async (ctx) => {
           submittedLink: userSubmittedLink
         });
         
-        // Show the link they submitted during slot phase
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅\n\n🔗 Your submitted link:\n${userSubmittedLink}`);
+        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅`);
         await saveGroupData(groupId, groupData);
       }
     } else {
@@ -3102,12 +2878,137 @@ bot.on('message', requireAllowedGroup, async (ctx) => {
   }
 });
 
-bot.launch().then(() => {
-  console.log('Bot started successfully');
-}).catch((error) => {
-  console.error('Error launching bot:', error);
+// ============= EDITED MESSAGE HANDLER =============
+bot.on('edited_message', async (ctx) => {
+  if (!ctx.chat || ctx.chat.type === 'private') return;
+  if (ctx.editedMessage.from.id === ctx.botInfo.id) return;
+
+  const groupId = ctx.chat.id;
+  const userId = ctx.editedMessage.from.id.toString();
+  
+  const isUserAdmin = await isAdmin(ctx, userId);
+  if (isUserAdmin) return;
+  
+  let groupData = await getGroupData(groupId);
+  
+  // Only check during SLOT_OPEN phase for X link edits
+  if (groupData.state === BOT_STATES.SLOT_OPEN) {
+    const messageText = ctx.editedMessage.text || '';
+    
+    // Check if this is a tracked X link message
+    const userData = groupData.userLinks.get(userId);
+    if (userData && userData.userMessageId === ctx.editedMessage.message_id) {
+      
+      const originalLink = userData.link;
+      
+      // ANY edit to the X link message triggers punishment
+      if (messageText !== originalLink) {
+        // Delete the edited message
+        await ctx.deleteMessage();
+        
+        // Also delete bot's verification message if it exists
+        if (userData.botMessageId) {
+          try {
+            await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
+          } catch (error) {
+            console.error('Error deleting bot message:', error);
+          }
+        }
+        
+        // Mute user for 30 minutes for editing their X link
+        await muteUser(ctx, groupData, userId, null, 30);
+        
+        // Remove user from userLinks since they violated
+        groupData.userLinks.delete(userId);
+        groupData.linkCount = Math.max(0, groupData.linkCount - 1);
+        
+        const xUsername = userData.xUsername || 'N/A';
+        
+        await ctx.reply(`🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 30 minutes - editing your X link is strictly prohibited!\n\nOriginal link was: ${originalLink}`);
+        await saveGroupData(groupId, groupData);
+      }
+    }
+  }
+});
+// ============= EDITED MESSAGE HANDLER =============
+bot.on('edited_message', async (ctx) => {
+  if (!ctx.chat || ctx.chat.type === 'private') return;
+  if (ctx.editedMessage.from.id === ctx.botInfo.id) return;
+
+  const groupId = ctx.chat.id;
+  const userId = ctx.editedMessage.from.id.toString();
+  
+  const isUserAdmin = await isAdmin(ctx, userId);
+  if (isUserAdmin) return;
+  
+  let groupData = await getGroupData(groupId);
+  
+  if (groupData.state === BOT_STATES.SLOT_OPEN) {
+    const messageText = ctx.editedMessage.text || '';
+    const userData = groupData.userLinks.get(userId);
+    
+    if (userData && userData.userMessageId === ctx.editedMessage.message_id) {
+      const originalLink = userData.link;
+      
+      if (messageText !== originalLink) {
+        await ctx.deleteMessage();
+        
+        if (userData.botMessageId) {
+          try {
+            await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
+          } catch (error) {
+            console.error('Error deleting bot message:', error);
+          }
+        }
+        
+        await muteUser(ctx, groupData, userId, null, 30);
+        groupData.userLinks.delete(userId);
+        groupData.linkCount = Math.max(0, groupData.linkCount - 1);
+        
+        const xUsername = userData.xUsername || 'N/A';
+        await ctx.reply(`🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 30 minutes - editing your X link is strictly prohibited!\n\nOriginal link was: ${originalLink}`);
+        await saveGroupData(groupId, groupData);
+      }
+    }
+  }
+});
+
+// ============= BOT STARTUP =============
+function startBot() {
+  bot.launch().then(() => {
+    console.log('🤖 Bot started successfully at', new Date().toLocaleString());
+  }).catch((error) => {
+    console.error('❌ Error launching bot:', error);
+    console.log('🔄 Attempting to restart in 5 seconds...');
+    
+    setTimeout(() => {
+      console.log('🔄 Restarting bot...');
+      startBot();
+    }, 5000);
+  });
+}
+
+// Start bot
+startBot();
+
+// ============= ERROR HANDLING =============
+process.on('uncaughtException', (error) => {
+  console.error('🚨 UNCAUGHT EXCEPTION:', error);
+  console.log('🔄 Bot will restart in 10 seconds...');
+  
+  setTimeout(() => {
+    console.log('🔄 Restarting due to uncaught exception...');
+    bot.stop();
+    startBot();
+  }, 10000);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨 UNHANDLED REJECTION at:', promise, 'reason:', reason);
 });
 
 // ============= GRACEFUL SHUTDOWN =============
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+  console.log('🛑 Received SIGINT. Stopping bot gracefully...');
+  bot.stop('SIGINT');
+});

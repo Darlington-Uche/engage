@@ -1,10 +1,9 @@
-require('dns').setDefaultResultOrder('ipv4first');
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
 const axios = require('axios');
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_TEST);
 
 // ============= CONSTANTS & CONFIGURATION =============
 const BOT_STATES = {
@@ -23,10 +22,7 @@ const PIN_INTERVAL = 20; // minutes
 // ============= UTILITY FUNCTIONS =============
 // ============= ALLOWED GROUPS CONFIGURATION =============
 const ALLOWED_GROUP_IDS = [
--1002157265749,
--1002758821586,
--1003086655968,
--1002269801668
+-1003432835643
 ];
 // ============= GROUP CHECK FUNCTION =============
 function isGroupAllowed(groupId) {
@@ -108,109 +104,205 @@ async function muteAllUsers(ctx, groupData, groupId) {
   return { mutedCount, failedMutes };
 }
 
-  
-  // Direct extractio
+
 
 const extractUsernameFromXLink = async (url) => {
-  if (!url || typeof url !== 'string') return null;
-  
-  // METHOD 1: Direct extraction from URL
+  if (!url || typeof url !== "string") return null;
+
+  // Validate + sanitize username
+  const cleanUsername = (u) => {
+    if (!u) return null;
+    u = u.toLowerCase().trim();
+
+    const banned = [
+      "i",
+      "intent",
+      "imprint",
+      "imprint.html",
+      "privacy",
+      "privacy.html",
+      "status",
+      "home",
+      "tos",
+      "tos.html"
+    ];
+
+    if (banned.includes(u)) return null;
+    if (u.includes("imprint") || u.includes("privacy") || u.includes("html"))
+      return null;
+
+    // Only accept valid usernames
+    if (!/^[a-z0-9_]{1,25}$/i.test(u)) return null;
+
+    return u;
+  };
+
+  // -------------------------
+  // METHOD 1: Direct URL extraction
+  // -------------------------
   const directPatterns = [
-    /https?:\/\/x\.com\/([^\/]+)\/status\/[0-9]+/i,
-    /https?:\/\/(?:www\.)?x\.com\/([^\/]+)/i,
-    /https?:\/\/twitter\.com\/([^\/]+)\/status\/[0-9]+/i,
-    /https?:\/\/(?:www\.)?twitter\.com\/([^\/]+)/i
+    /x\.com\/([^\/]+)\/status\/\d+/i,
+    /twitter\.com\/([^\/]+)\/status\/\d+/i,
+    /x\.com\/([^\/?#]+)/i,
+    /twitter\.com\/([^\/?#]+)/i,
+    /x\.com\/([^\/]+)$/i
   ];
-  
-  for (const pattern of directPatterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      const username = match[1].toLowerCase();
-      // Skip shortened links - we'll handle them separately
-      if (username === 'i' || username === 'intent') {
-        break; // Exit loop and try other methods
-      }
-      return username;
+
+  for (const p of directPatterns) {
+    const m = url.match(p);
+    const valid = cleanUsername(m?.[1]);
+    if (valid) return valid;
+  }
+
+  // -------------------------
+  // Detect tweet ID
+  // -------------------------
+  const matchId = url.match(/\/status\/(\d+)/i) || url.match(/\/i\/status\/(\d+)/i);
+  if (!matchId) return null;
+  const tweetId = matchId[1];
+
+  // -------------------------
+  // METHOD 2: oEmbed
+  // -------------------------
+  try {
+    const r = await axios.get(
+      `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`,
+      { timeout: 6000 }
+    );
+    const m = r.data?.author_url?.match(/twitter\.com\/([^\/]+)/i);
+    const valid = cleanUsername(m?.[1]);
+    if (valid) return valid;
+  } catch {}
+
+  // -------------------------
+  // METHOD 3: Syndication API
+  // -------------------------
+  try {
+    const r = await axios.get(
+      `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`,
+      { timeout: 6000 }
+    );
+    const valid = cleanUsername(r.data?.user?.screen_name);
+    if (valid) return valid;
+  } catch {}
+
+  // -------------------------
+  // METHOD 4: HTML full fetch + meta scan
+  // -------------------------
+  let html = "";
+  try {
+    const h = await axios.get(`https://twitter.com/i/status/${tweetId}`, {
+      timeout: 7000,
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    html = h.data;
+  } catch {}
+
+  if (html) {
+    const patterns = [
+      /"screen_name":"([^"]+)"/i,
+      /"userScreenName":"([^"]+)"/i,
+      /twitter\.com\/([^\/"]+)/i,
+      /content="https:\/\/twitter\.com\/([^\/"]+)/i
+    ];
+    for (const p of patterns) {
+      const m = html.match(p);
+      const valid = cleanUsername(m?.[1]);
+      if (valid) return valid;
     }
   }
-  
-  // METHOD 2: If it's a shortened link, try to extract tweet ID
-  const shortenedPattern = /\/i\/status\/(\d+)/i;
-  const match = url.match(shortenedPattern);
-  
-  if (match && match[1]) {
-    const tweetId = match[1];
-    
-    try {
-      // Try using Twitter's oEmbed API (more reliable)
-      const oembedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`;
-      const response = await axios.get(oembedUrl, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json'
+
+  // -------------------------
+  // METHOD 5: Extract embedded Tweet JSON
+  // -------------------------
+  if (html) {
+    const jsonMatch = html.match(/<script[^>]*>window\.__INITIAL_STATE__=(\{.*?\})<\/script>/i);
+    if (jsonMatch) {
+      try {
+        const json = JSON.parse(jsonMatch[1]);
+        const candidates = [
+          json?.tweet?.core?.user?.screen_name,
+          json?.globalObjects?.users,
+        ];
+
+        for (const c of candidates) {
+          if (!c) continue;
+          if (typeof c === "string") {
+            const valid = cleanUsername(c);
+            if (valid) return valid;
+          } else if (typeof c === "object") {
+            for (const k in c) {
+              const valid = cleanUsername(c[k]?.screen_name);
+              if (valid) return valid;
+            }
+          }
         }
-      });
-      
-      if (response.data && response.data.author_url) {
-        const authorMatch = response.data.author_url.match(/twitter\.com\/([^\/]+)/i);
-        if (authorMatch && authorMatch[1]) {
-          return authorMatch[1].toLowerCase();
-        }
-      }
-    } catch (error) {
-      console.log('oEmbed method failed:', error.message);
-    }
-    
-    try {
-      // METHOD 3: Try using Twitter's syndication API (no API key needed)
-      const syndicationUrl = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`;
-      const response = await axios.get(syndicationUrl, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      if (response.data && response.data.user) {
-        return response.data.user.screen_name.toLowerCase();
-      }
-    } catch (error) {
-      console.log('Syndication method failed:', error.message);
-    }
-    
-    try {
-      // METHOD 4: Try to fetch the page and parse HTML
-      const htmlResponse = await axios.get(`https://twitter.com/i/status/${tweetId}`, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      const html = htmlResponse.data;
-      
-      // Try to find username in meta tags
-      const metaPatterns = [
-        /"screen_name":"([^"]+)"/i,
-        /"userScreenName":"([^"]+)"/i,
-        /twitter\.com\/([^\/"]+)/i,
-        /content="https:\/\/twitter\.com\/([^\/"]+)/i
-      ];
-      
-      for (const pattern of metaPatterns) {
-        const metaMatch = html.match(pattern);
-        if (metaMatch && metaMatch[1] && metaMatch[1] !== 'i' && metaMatch[1] !== 'intent') {
-          return metaMatch[1].toLowerCase();
-        }
-      }
-    } catch (error) {
-      console.log('HTML parsing method failed:', error.message);
+      } catch {}
     }
   }
-  
+
+  // -------------------------
+  // METHOD 6: Parse any JSON inside <script> tags
+  // -------------------------
+  if (html) {
+    const scriptJsons = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+    for (const block of scriptJsons) {
+      try {
+        const potential = block.match(/"screen_name":"([^"]+)"/i);
+        const valid = cleanUsername(potential?.[1]);
+        if (valid) return valid;
+      } catch {}
+    }
+  }
+
+  // -------------------------
+  // METHOD 7: Look for profile image URLs (they contain the username)
+  // -------------------------
+  if (html) {
+    const imgMatch = html.match(/https:\/\/pbs\.twimg\.com\/profile_images\/[^\/]+\/([^\/_]+)[._]/i);
+    const valid = cleanUsername(imgMatch?.[1]);
+    if (valid) return valid;
+  }
+
+  // -------------------------
+  // METHOD 8: Look for creator tag (OpenGraph)
+  // -------------------------
+  if (html) {
+    const ogMatch = html.match(/property="og:site_name" content="([^"]+)"/i);
+    const valid = cleanUsername(ogMatch?.[1]);
+    if (valid) return valid;
+  }
+
+  // -------------------------
+  // METHOD 9: Extract username from canonical link
+  // -------------------------
+  if (html) {
+    const canonical = html.match(/<link rel="canonical" href="https:\/\/twitter\.com\/([^\/"]+)/i);
+    const valid = cleanUsername(canonical?.[1]);
+    if (valid) return valid;
+  }
+
+  // -------------------------
+  // METHOD 10: Extract from user ID mapping (hidden payloads)
+  // -------------------------
+  if (html) {
+    const userJson = html.match(/"users":\{(.*?)\}/is);
+    if (userJson) {
+      try {
+        const jas = JSON.parse(`{"users":{${userJson[1]}}}`);
+        for (const uid in jas.users) {
+          const valid = cleanUsername(jas.users[uid]?.screen_name);
+          if (valid) return valid;
+        }
+      } catch {}
+    }
+  }
+
+  // NOTHING WORKED → return null
   return null;
 };
+
+
 const isXLink = (text) => {
   if (!text || typeof text !== 'string') return false;
   return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/.+/i.test(text);
@@ -238,32 +330,37 @@ const cleanupExpiredMutes = (groupData) => {
 };
 
 // ============= DATABASE FUNCTIONS =============
-// ============= LINK STORAGE FUNCTIONS =============
-const getTrackingLink = async () => {
+// ============= LINK STORAGE FUNCTIONS (Group-based) =============
+const getTrackingLink = async (groupId) => {
   try {
-    const doc = await db.collection('config').doc('tracking_link').get();
+    const doc = await db.collection('groupTrackingLinks').doc(groupId.toString()).get();
     if (doc.exists) {
-      return doc.data().link || 'https://x.com/always_alpha007';
+      const data = doc.data();
+      return data.link || 'https://x.com/always_alpha007'; // Return stored link or default
     }
-    return 'https://x.com/always_alpha007'; // Default
+    return 'https://x.com/always_alpha007'; // Default if not set
   } catch (error) {
-    console.error('Error getting tracking link:', error);
-    return 'https://x.com/always_alpha007';
+    console.error('Error getting tracking link for group', groupId, ':', error);
+    return 'https://x.com/always_alpha007'; // Default on error
   }
 };
 
-const setTrackingLink = async (link) => {
+const setTrackingLink = async (groupId, link) => {
   try {
-    await db.collection('config').doc('tracking_link').set({
+    await db.collection('groupTrackingLinks').doc(groupId.toString()).set({
       link: link,
-      updatedAt: new Date()
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'admin'
     }, { merge: true });
     return true;
   } catch (error) {
-    console.error('Error setting tracking link:', error);
+    console.error('Error setting tracking link for group', groupId, ':', error);
     return false;
   }
 };
+
+
+
 const getGroupData = async (groupId) => {
   // Check cache first
   if (groupDataCache.has(groupId)) {
@@ -321,8 +418,8 @@ const saveGroupData = async (groupId, data) => {
       linkCount: data.linkCount,
       srCounter: data.srCounter,
       currentPinnedMessageId: data.currentPinnedMessageId,
-      createdAt: data.createdAt,
-      updatedAt: new Date().toISOString()  
+      createdAt: data.createdAt ? data.createdAt : new Date(), // Keep as Date
+      updatedAt: new Date() // Use Date object, not ISO string
     };
 
     await db.collection('groups').doc(groupId.toString()).set(firebaseData, { merge: true });
@@ -408,7 +505,14 @@ const muteUser = async (ctx, groupData, userId, xUsername = null, duration = 30)
 
 const isUserMutedXUsername = async (groupId, xUsername) => {
   try {
-    const doc = await db.collection('mutedUsers').doc(`${groupId}_${xUsername.toLowerCase()}`).get();
+    // Check if xUsername is valid
+    if (!xUsername || typeof xUsername !== 'string') {
+      return false;
+    }
+    
+    const xUsernameLower = xUsername.toLowerCase();
+    const doc = await db.collection('mutedUsers').doc(`${groupId}_${xUsernameLower}`).get();
+    
     if (doc.exists) {
       const data = doc.data();
       const expiresAt = new Date(data.expiresAt);
@@ -416,7 +520,7 @@ const isUserMutedXUsername = async (groupId, xUsername) => {
         return true;
       } else {
         // Delete expired mute
-        await db.collection('mutedUsers').doc(`${groupId}_${xUsername.toLowerCase()}`).delete();
+        await db.collection('mutedUsers').doc(`${groupId}_${xUsernameLower}`).delete();
         return false;
       }
     }
@@ -426,7 +530,6 @@ const isUserMutedXUsername = async (groupId, xUsername) => {
     return false;
   }
 };
-
 // ============= MESSAGE MANAGEMENT FUNCTIONS =============
 const deleteBotMessage = async (ctx, groupId, userId) => {
   try {
@@ -673,7 +776,7 @@ bot.command('rl', requireAllowedGroup, async (ctx) => {
   await ctx.reply(rulesMessage, { parse_mode: "Markdown" });
 });
 // ============= HELP COMMAND (ADMIN ONLY) =============
-bot.command('help', requireAllowedGroup, async (ctx) => {
+bot.command('help', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -1047,7 +1150,7 @@ bot.command('list', requireAllowedGroup, async (ctx) => {
   }
 });
 
-// ============= SIMPLIFIED CLEAR COMMAND =============
+// ============= IMPROVED CLEAR COMMAND =============
 bot.command('clear', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
@@ -1058,45 +1161,76 @@ bot.command('clear', async (ctx) => {
   }
   
   try {
-    const progressMsg = await ctx.reply('🧹 Starting to clear recent messages...');
+    const commandMessageId = ctx.message.message_id;
+    const progressMsg = await ctx.reply('🧹 Starting to clear messages... (0 deleted)');
     
     let deletedCount = 0;
-    const MAX_MESSAGES = 1000; // Clear last 100 messages max
+    const MAX_ATTEMPTS = 500; // Maximum messages to attempt deleting
+    const BATCH_SIZE = 20; // Delete in batches
+    const DELAY_MS = 2000; // Delay between batches
     
-    // Try to delete messages in reverse order
-    for (let i = 1; i <= MAX_MESSAGES; i++) {
-      try {
-        const messageId = ctx.message.message_id - i;
-        if (messageId > 0) {
-          await ctx.telegram.deleteMessage(groupId, messageId);
+    // Start from the most recent message before the command
+    let currentMessageId = commandMessageId - 1;
+    
+    while (currentMessageId > 0 && deletedCount < MAX_ATTEMPTS) {
+      let batchDeleted = 0;
+      
+      // Try to delete a batch of messages
+      for (let i = 0; i < BATCH_SIZE && currentMessageId > 0; i++) {
+        try {
+          await ctx.telegram.deleteMessage(groupId, currentMessageId);
           deletedCount++;
+          batchDeleted++;
+          currentMessageId--;
+        } catch (error) {
+          if (error.response && error.response.error_code === 400) {
+            // Message too old or doesn't exist, skip it
+            currentMessageId--;
+            continue;
+          } else {
+            // Other error (permission, rate limit), wait and try again
+            console.log(`Delete error at message ${currentMessageId}:`, error.message);
+            break;
+          }
         }
-      } catch (error) {
-        // Stop when we hit messages we can't delete
+      }
+      
+      // Update progress every batch
+      if (deletedCount > 0 && (deletedCount % 20 === 0 || batchDeleted === 0)) {
+        try {
+          await ctx.telegram.editMessageText(
+            groupId,
+            progressMsg.message_id,
+            null,
+            `🧹 Clearing... ${deletedCount} messages deleted so far`
+          );
+        } catch (error) {
+          console.log('Could not update progress:', error.message);
+        }
+      }
+      
+      // If we couldn't delete any in this batch, we've hit the limit
+      if (batchDeleted === 0) {
         break;
       }
       
-      // Small delay to avoid rate limits
-      if (i % 10 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait between batches to avoid rate limits
+      if (currentMessageId > 0 && deletedCount < MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
       }
     }
     
-    // Update progress message
-    await ctx.telegram.editMessageText(
-      groupId,
-      progressMsg.message_id,
-      null,
-      `✅ Cleared ${deletedCount} recent messages.`
-    );
+    // Final result
+    const resultMsg = await ctx.reply(`✅ Successfully cleared ${deletedCount} messages.`);
     
-    // Auto-delete the result after 5 seconds
+    // Clean up after 5 seconds
     setTimeout(async () => {
       try {
-        await ctx.deleteMessage();
+        await ctx.telegram.deleteMessage(groupId, commandMessageId);
         await ctx.telegram.deleteMessage(groupId, progressMsg.message_id);
+        await ctx.telegram.deleteMessage(groupId, resultMsg.message_id);
       } catch (error) {
-        console.log('Could not clean up clear command:', error);
+        console.log('Cleanup error:', error.message);
       }
     }, 5000);
     
@@ -2256,7 +2390,8 @@ bot.command('xban', async (ctx) => {
   }
 });
 
-bot.command('setlink', requireAllowedGroup, async (ctx) => {
+// ============= SETLINK COMMAND =============
+bot.command('setlink', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
 
@@ -2278,10 +2413,10 @@ bot.command('setlink', requireAllowedGroup, async (ctx) => {
     return ctx.reply('❌ Please provide a valid X/Twitter link.');
   }
 
-  const success = await setTrackingLink(newLink);
+  const success = await setTrackingLink(groupId, newLink);
   
   if (success) {
-    await ctx.reply(`✅ Tracking link updated to:\n${newLink}`);
+    await ctx.reply(`✅ Tracking link updated for this group:\n${newLink}\n\nThis link will be shown during checking phase.`);
   } else {
     await ctx.reply('❌ Failed to update tracking link.');
   }
@@ -2967,28 +3102,30 @@ bot.on('message', async (ctx) => {
       return;
     }
     
-    // Handle X link submission
-    if (isXLink(messageText)) {
-      const xUsername = await extractUsernameFromXLink(messageText);
-      
-      if (!xUsername) {
-        await ctx.deleteMessage();
-        await ctx.reply('Invalid X link format. Use format: https://x.com/username/status/123456789');
-        return;
-      }
-      
-      // Check if X username is already in muted list (from Firebase)
-      const isMutedInFirebase = await isUserMutedXUsername(groupId, xUsername);
-      const isMutedInMemory = groupData.mutedXUsernames.has(xUsername.toLowerCase());
-      
-      if (isMutedInFirebase || isMutedInMemory) {
-        await ctx.deleteMessage();
-        await muteUser(ctx, groupData, userId, xUsername, 30);
-        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
-        await saveGroupData(groupId, groupData);
-        return;
-      }
-      
+    // In your message handler, around line 3013:
+if (isXLink(messageText)) {
+  const xUsername = await extractUsernameFromXLink(messageText);
+  
+  if (!xUsername) {
+    await ctx.deleteMessage();
+    await ctx.reply('Invalid X link format. Use format: https://x.com/username/status/123456789');
+    return;
+  }
+  
+  // Check if X username is already in muted list (from Firebase)
+  // ADD NULL CHECK HERE:
+  if (xUsername) { // Only check if xUsername is not null
+    const isMutedInFirebase = await isUserMutedXUsername(groupId, xUsername);
+    const isMutedInMemory = groupData.mutedXUsernames.has(xUsername.toLowerCase());
+    
+    if (isMutedInFirebase || isMutedInMemory) {
+      await ctx.deleteMessage();
+      await muteUser(ctx, groupData, userId, xUsername, 30);
+      await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
+      await saveGroupData(groupId, groupData);
+      return;
+    }
+  }
       // Check if another user already used this X username
       let duplicateFound = false;
       let duplicateUserId = null;
@@ -3016,20 +3153,13 @@ bot.on('message', async (ctx) => {
         return;
       }
       
-      // ✅ DELETE USER'S ORIGINAL MESSAGE
-      await ctx.deleteMessage();
-      
-      // ✅ BOT REPOSTS THE LINK (prevents editing)
-      const userDisplayName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-      const botMessage = await ctx.reply(`${messageText}`);
-      
-      // Save valid link data
+      // Save valid link data with BOTH message IDs
       groupData.userLinks.set(userId, {
         tgUsername: ctx.from.username || ctx.from.first_name,
         tgUserId: userId,
         xUsername: xUsername,
         link: messageText,
-        botMessageId: botMessage.message_id, // Store bot's message ID
+        userMessageId: ctx.message.message_id, // Store USER'S message ID
         timestamp: new Date()
       });
       
@@ -3086,8 +3216,7 @@ bot.on('message', async (ctx) => {
           submittedLink: userSubmittedLink
         });
         
-        // Show the link they submitted during slot phase
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅\n\n🔗 Your submitted link:\n${userSubmittedLink}`);
+        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅`);
         await saveGroupData(groupId, groupData);
       }
     } else {
@@ -3100,6 +3229,65 @@ bot.on('message', async (ctx) => {
     }
   }
 });
+// ============= EDITED MESSAGE HANDLER =============
+// This catches when users edit their messages
+bot.on('edited_message', async (ctx) => {
+  if (!ctx.chat || ctx.chat.type === 'private') return;
+  if (ctx.editedMessage.from.id === ctx.botInfo.id) return;
+
+  const groupId = ctx.chat.id;
+  const userId = ctx.editedMessage.from.id.toString();
+  
+  // Check if user is admin - ignore admins
+  const isUserAdmin = await isAdmin(ctx, userId);
+  if (isUserAdmin) {
+    return;
+  }
+  
+  let groupData = await getGroupData(groupId);
+  
+  // Only check during SLOT_OPEN phase
+  if (groupData.state === BOT_STATES.SLOT_OPEN) {
+    const messageText = ctx.editedMessage.text || '';
+    
+    // Check if this is a message we're tracking (user's X link message)
+    const userData = groupData.userLinks.get(userId);
+    if (userData && userData.userMessageId === ctx.editedMessage.message_id) {
+      
+      // Get the original link from storage
+      const originalLink = userData.link;
+      
+      // ANY edit to the message triggers punishment
+      if (messageText !== originalLink) {
+        // Delete the edited message
+        await ctx.deleteMessage();
+        
+        // Also delete bot's verification message if it exists
+        if (userData.botMessageId) {
+          try {
+            await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
+          } catch (error) {
+            console.error('Error deleting bot message:', error);
+          }
+        }
+        
+        // Mute user for 30 minutes for editing their message
+        await muteUser(ctx, groupData, userId, null, 30);
+        
+        // Remove user from userLinks since they violated
+        groupData.userLinks.delete(userId);
+        groupData.linkCount = Math.max(0, groupData.linkCount - 1);
+        
+        // Get the X username for the warning message
+        const xUsername = userData.xUsername || 'N/A';
+        
+        await ctx.reply(`🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 30 minutes - editing your X link is strictly prohibited!\n\nOriginal link was: ${originalLink}`);
+        await saveGroupData(groupId, groupData);
+      }
+    }
+  }
+});
+
 
 // ============= AUTO RESTART ON ERROR =============
 function startBot() {
