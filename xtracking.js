@@ -2330,20 +2330,29 @@ bot.on('message', async (ctx) => {
   let groupData = await getGroupData(groupId);
   cleanupExpiredMutes(groupData);
   
-  // SLOT PHASE - ALLOW CHATTING, ONLY REGULATE X LINKS
+  // SLOT PHASE
   if (groupData.state === BOT_STATES.SLOT_OPEN) {
     const messageText = ctx.message.text || '';
     
-    // If user has already dropped an X link
+    // Check if user has already dropped an X link
     if (groupData.userLinks.has(userId)) {
-      // User already submitted an X link, check if they're trying to submit another
+      // User already submitted an X link
       if (isXLink(messageText)) {
+        // Trying to submit another X link - delete and mute 30 mins
         await ctx.deleteMessage();
         await muteUser(ctx, groupData, userId, null, 30);
-        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple X links detected.`);
+        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple X links detected.`);
         await saveGroupData(groupId, groupData);
+      } else {
+        // User sent NON-X link (any other link) - delete and mute 30 mins
+        if (hasLink(messageText)) {
+          await ctx.deleteMessage();
+          await muteUser(ctx, groupData, userId, null, 30);
+          await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - non-X links not allowed.`);
+          await saveGroupData(groupId, groupData);
+        }
+        // If it's not a link at all (just regular text), allow chatting
       }
-      // If it's not an X link, allow chatting (don't delete or mute)
       return;
     }
     
@@ -2354,7 +2363,7 @@ bot.on('message', async (ctx) => {
       if (!xUsername) {
         await ctx.deleteMessage();
         await muteUser(ctx, groupData, userId, null, 5);
-        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 5 minutes - invalid X link format.`);
+        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 5 minutes - invalid X link format.`);
         await saveGroupData(groupId, groupData);
         return;
       }
@@ -2367,7 +2376,7 @@ bot.on('message', async (ctx) => {
         if (isMutedInFirebase || isMutedInMemory) {
           await ctx.deleteMessage();
           await muteUser(ctx, groupData, userId, xUsername, 30);
-          await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
+          await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
           await saveGroupData(groupId, groupData);
           return;
         }
@@ -2391,7 +2400,7 @@ bot.on('message', async (ctx) => {
         await ctx.deleteMessage();
         await muteUser(ctx, groupData, duplicateUserId, xUsername, 30);
         await muteUser(ctx, groupData, userId, xUsername, 30);
-        await ctx.reply(`🔇 @${duplicateUserData?.tgUsername || 'User1'} and @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - same X username (@${xUsername}) detected.`);
+        await ctx.reply(`@${duplicateUserData?.tgUsername || 'User1'} and @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - same X username (@${xUsername}) detected.`);
         await saveGroupData(groupId, groupData);
         return;
       }
@@ -2409,23 +2418,29 @@ bot.on('message', async (ctx) => {
       groupData.linkCount++;
       await saveGroupData(groupId, groupData);
       
-try {
-    await ctx.telegram.setMessageReaction(
-      ctx.chat.id,
-      ctx.message.message_id,
-      [{ type: 'emoji', emoji: '🔥' }]
-    );
-} catch (error) {
-    console.error("Reaction failed:", error.description || error);
-}
+      try {
+        await ctx.telegram.setMessageReaction(
+          ctx.chat.id,
+          ctx.message.message_id,
+          [{ type: 'emoji', emoji: '🔥' }]
+        );
+      } catch (error) {
+        console.error("Reaction failed:", error.description || error);
+      }
+      
     } else {
-      // If it's not an X link, allow chatting (don't delete or mute)
-      // Only regular chatting is allowed
-      return;
+      // User sent NON-X link (any other link) - delete and mute 30 mins
+      if (hasLink(messageText)) {
+        await ctx.deleteMessage();
+        await muteUser(ctx, groupData, userId, null, 30);
+        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - non-X links not allowed.`);
+        await saveGroupData(groupId, groupData);
+      }
+      // If it's not a link at all (just regular text), allow chatting
     }
   }
   
-  // CHECKING PHASE: Handle media submissions (only regular users)
+  // CHECKING PHASE
   else if (groupData.state === BOT_STATES.CHECKING) {
     // Check if user dropped a link in slot phase
     if (!groupData.userLinks.has(userId)) {
@@ -2480,7 +2495,7 @@ try {
   }
 });
 
-// ============= EDITED MESSAGE HANDLER =============
+// ============= EDITED MESSAGE HANDLER (Fixed) =============
 bot.on('edited_message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.editedMessage.from.id === ctx.botInfo.id) return;
@@ -2488,59 +2503,6 @@ bot.on('edited_message', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.editedMessage.from.id.toString();
   
-  const isUserAdmin = await isAdmin(ctx, userId);
-  if (isUserAdmin) return;
-  
-  let groupData = await getGroupData(groupId);
-  
-  // Only check during SLOT_OPEN phase for X link edits
-  if (groupData.state === BOT_STATES.SLOT_OPEN) {
-    const messageText = ctx.editedMessage.text || '';
-    
-    // Check if this is a tracked X link message
-    const userData = groupData.userLinks.get(userId);
-    if (userData && userData.userMessageId === ctx.editedMessage.message_id) {
-      
-      const originalLink = userData.link;
-      
-      // ANY edit to the X link message triggers punishment
-      if (messageText !== originalLink) {
-        // Delete the edited message
-        await ctx.deleteMessage();
-        
-        // Also delete bot's verification message if it exists
-        if (userData.botMessageId) {
-          try {
-            await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
-          } catch (error) {
-            console.error('Error deleting bot message:', error);
-          }
-        }
-        
-        // Mute user for 30 minutes for editing their X link
-        await muteUser(ctx, groupData, userId, null, 30);
-        
-        // Remove user from userLinks since they violated
-        groupData.userLinks.delete(userId);
-        groupData.linkCount = Math.max(0, groupData.linkCount - 1);
-        
-        const xUsername = userData.xUsername || 'N/A';
-        
-        await ctx.reply(`🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 30 minutes - editing your X link is strictly prohibited!\n\nOriginal link was: ${originalLink}`);
-        await saveGroupData(groupId, groupData);
-      }
-    }
-  }
-});
-// ============= EDITED MESSAGE HANDLER =============
-bot.on('edited_message', async (ctx) => {
-  if (!ctx.chat || ctx.chat.type === 'private') return;
-  if (ctx.editedMessage.from.id === ctx.botInfo.id) return;
-
-  const groupId = ctx.chat.id;
-  const userId = ctx.editedMessage.from.id.toString();
-  
-  // Skip admins
   const isUserAdmin = await isAdmin(ctx, userId);
   if (isUserAdmin) return;
   
@@ -2548,37 +2510,25 @@ bot.on('edited_message', async (ctx) => {
   
   // BLOCK ALL EDITS DURING SLOT OPEN PHASE
   if (groupData.state === BOT_STATES.SLOT_OPEN) {
-    // Delete the edited message
+    // Delete the edited message immediately
     await ctx.deleteMessage();
     
-    // Mute user for 30 minutes
-    await muteUser(ctx, groupData, userId, null, 30);
+    // Mute user for 5 minutes (not 30)
+    await muteUser(ctx, groupData, userId, null, 5);
     
     // Get the user's X link data if they submitted one
     const userData = groupData.userLinks.get(userId);
-    const xUsername = userData ? userData.xUsername : null;
     
     // Send warning message
-    const warningMsg = `🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 30 minutes - editing ANY message is strictly prohibited during slot phase!`;
-    
-    await ctx.reply(warningMsg);
+    await ctx.reply(`@${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 5 minutes - editing messages is not allowed.`);
     
     // If they edited their X link, remove it from tracking
     if (userData && userData.userMessageId === ctx.editedMessage.message_id) {
-      // Delete bot's verification message if it exists
-      if (userData.botMessageId) {
-        try {
-          await ctx.telegram.deleteMessage(groupId, userData.botMessageId);
-        } catch (error) {
-          console.error('Error deleting bot message:', error);
-        }
-      }
-      
       // Remove from userLinks
       groupData.userLinks.delete(userId);
       groupData.linkCount = Math.max(0, groupData.linkCount - 1);
       
-      await ctx.reply(`${warningMsg}\n\n⚠️ Your X link has also been removed from the slot!`);
+      await ctx.reply(`⚠️ Your X link has also been removed from the slot!`);
     }
     
     await saveGroupData(groupId, groupData);
@@ -2586,44 +2536,25 @@ bot.on('edited_message', async (ctx) => {
   
   // ALSO BLOCK EDITS DURING CHECKING PHASE
   else if (groupData.state === BOT_STATES.CHECKING) {
-    // Delete the edited message
+    // Delete the edited message immediately
     await ctx.deleteMessage();
     
-    // Mute user for 30 minutes
-    await muteUser(ctx, groupData, userId, null, 30);
+    // Mute user for 5 minutes
+    await muteUser(ctx, groupData, userId, null, 5);
     
-    const warningMsg = `🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 30 minutes - editing ANY message is strictly prohibited during checking phase!`;
-    
-    await ctx.reply(warningMsg);
+    await ctx.reply(`@${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 5 minutes - editing messages is not allowed.`);
     await saveGroupData(groupId, groupData);
   }
   
-  // Optionally: Block edits even in IDLE or CLOSED states
+  // Block edits in IDLE or CLOSED states too
   else if (groupData.state === BOT_STATES.IDLE || groupData.state === BOT_STATES.CLOSED) {
-    // If you want to block edits all the time, not just during active phases
     await ctx.deleteMessage();
-    await muteUser(ctx, groupData, userId, null, 10); // 10 minute mute
+    await muteUser(ctx, groupData, userId, null, 5);
     
-    await ctx.reply(`🔇 @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 10 minutes - editing messages is not allowed in this group.`);
+    await ctx.reply(`@${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 5 minutes - editing messages is not allowed.`);
     await saveGroupData(groupId, groupData);
   }
 });
-
-
-// ============= BOT STARTUP =============
-function startBot() {
-  bot.launch().then(() => {
-    console.log('🤖 Bot started successfully at', new Date().toLocaleString());
-  }).catch((error) => {
-    console.error('❌ Error launching bot:', error);
-    console.log('🔄 Attempting to restart in 5 seconds...');
-    
-    setTimeout(() => {
-      console.log('🔄 Restarting bot...');
-      startBot();
-    }, 5000);
-  });
-}
 
 // Start bot
 startBot();
