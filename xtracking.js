@@ -1,4 +1,5 @@
 const { Telegraf } = require('telegraf');
+require('dns').setDefaultResultOrder('ipv4first');
 const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
