@@ -2556,8 +2556,26 @@ bot.on('edited_message', async (ctx) => {
   }
 });
 
-// Start bot
+
+// ============= AUTO RESTART ON ERROR =============
+function startBot() {
+  bot.launch().then(() => {
+    console.log('🤖 Bot started successfully at', new Date().toLocaleString());
+  }).catch((error) => {
+    console.error('❌ Error launching bot:', error);
+    console.log('🔄 Attempting to restart in 5 seconds...');
+    
+    // Auto-restart after 5 seconds
+    setTimeout(() => {
+      console.log('🔄 Restarting bot...');
+      startBot();
+    }, 5000);
+  });
+}
+
+// Start 
 startBot();
+
 
 // ============= ERROR HANDLING =============
 process.on('uncaughtException', (error) => {
