@@ -1,5 +1,4 @@
 const { Telegraf } = require('telegraf');
-require('dns').setDefaultResultOrder('ipv4first');
 const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
@@ -1807,8 +1806,8 @@ bot.command('xmute', async (ctx) => {
   }
 });
 
-// ============= SIMPLE MUTELS COMMAND =============
-bot.command('mutels', async (ctx) => {
+// ============= SIMPLE MUTELIST COMMAND =============
+bot.command('mutelist', async (ctx) => {
   const groupId = ctx.chat.id;
   const userId = ctx.from.id;
   
@@ -2314,247 +2313,228 @@ bot.command('rhelp', async (ctx) => {
 // ============= MESSAGE HANDLERS =============
 // ============= MESSAGE HANDLERS =============
 // ============= MESSAGE HANDLERS =============
+// =========================================================
+//                 MESSAGE HANDLER (FULL REWRITE)
+// =========================================================
+//                 MESSAGE HANDLER (FULL)
+// =========================================================
+//                 MESSAGE HANDLER (FULL)
+// =========================================================
 bot.on('message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
-  if (ctx.message.text && ctx.message.text.startsWith('/')) return;
   if (ctx.from.id === ctx.botInfo.id) return;
+  if (ctx.message.text && ctx.message.text.startsWith('/')) return;
 
   const groupId = ctx.chat.id;
   const userId = ctx.from.id.toString();
-  
+  const msgText = ctx.message.text || "";
+
   const isUserAdmin = await isAdmin(ctx, userId);
-  if (isUserAdmin) {
-    return;
-  }
-  
+  if (isUserAdmin) return;
+
   let groupData = await getGroupData(groupId);
   cleanupExpiredMutes(groupData);
-  
-  // SLOT PHASE
+
+  // =========================================================
+  //                        SLOT PHASE
+  // =========================================================
   if (groupData.state === BOT_STATES.SLOT_OPEN) {
-    const messageText = ctx.message.text || '';
-    
-    // Check if user has already dropped an X link
+
+    const hasAnyLink = msgText.match(/https?:\/\/\S+/i);
+    const isX = isXLink(msgText);
+
+    // If user already submitted an X link earlier in this session:
     if (groupData.userLinks.has(userId)) {
-      // User already submitted an X link
-      if (isXLink(messageText)) {
-        // Trying to submit another X link - delete and mute 30 mins
+      // They are NOT allowed to send any additional links (X or non-X).
+      if (hasAnyLink) {
         await ctx.deleteMessage();
-        await muteUser(ctx, groupData, userId, null, 30);
-        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - multiple X links detected.`);
-        await saveGroupData(groupId, groupData);
-      } else {
-        // User sent NON-X link (any other link) - delete and mute 30 mins
-        if (hasLink(messageText)) {
-          await ctx.deleteMessage();
-          await muteUser(ctx, groupData, userId, null, 30);
-          await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - non-X links not allowed.`);
-          await saveGroupData(groupId, groupData);
-        }
-        // If it's not a link at all (just regular text), allow chatting
+        const warn = await ctx.reply(`⚠️ @${ctx.from.username || ctx.from.first_name} you already submitted your X link — only one submission per session.`);
+        setTimeout(() => ctx.deleteMessage(warn.message_id), 3000);
+        return;
       }
+      // If it's normal text, allow chatting
       return;
     }
-    
-    // User hasn't submitted an X link yet
-    if (isXLink(messageText)) {
-      const xUsername = await extractUsernameFromXLink(messageText);
-      
+
+    // --------------------------
+    // User sends ANY non-X link (and hasn't submitted before)
+    // --------------------------
+    if (hasAnyLink && !isX) {
+      await ctx.deleteMessage();
+
+      const warn = await ctx.reply(
+        `⚠️ @${ctx.from.username || ctx.from.first_name} only X links are allowed.`
+      );
+      setTimeout(() => ctx.deleteMessage(warn.message_id), 3000);
+      return;
+    }
+
+    // --------------------------
+    // User sends an X link (and hasn't submitted before)
+    // --------------------------
+    if (isX) {
+      const xUsername = await extractUsernameFromXLink(msgText);
       if (!xUsername) {
         await ctx.deleteMessage();
-        await muteUser(ctx, groupData, userId, null, 5);
-        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 5 minutes - invalid X link format.`);
+
+        const warn = await ctx.reply(
+          `⚠️ Invalid X link format.`
+        );
+        setTimeout(() => ctx.deleteMessage(warn.message_id), 3000);
+        return;
+      }
+
+      // ---------- CHECK IF X USERNAME IS MUTED → MUTE 30 MIN ----------
+      const isMutedInFirebase = await isUserMutedXUsername(groupId, xUsername);
+      const isMutedInMemory = groupData.mutedXUsernames.has(xUsername.toLowerCase());
+
+      if (isMutedInFirebase || isMutedInMemory) {
+        await ctx.deleteMessage();
+        await muteUser(ctx, groupData, userId, xUsername, 30);
+
+        await ctx.reply(`🔇 @${ctx.from.username || ctx.from.first_name} muted 30 minutes — muted user link (@${xUsername}).`);
         await saveGroupData(groupId, groupData);
         return;
       }
-      
-      // Check if X username is muted
-      if (xUsername) {
-        const isMutedInFirebase = await isUserMutedXUsername(groupId, xUsername);
-        const isMutedInMemory = groupData.mutedXUsernames.has(xUsername.toLowerCase());
-        
-        if (isMutedInFirebase || isMutedInMemory) {
+
+      // ---------- CHECK FOR DUPLICATE X USERNAME (another user already used same X) ----------
+      for (const [, data] of groupData.userLinks.entries()) {
+        if (data.xUsername.toLowerCase() === xUsername.toLowerCase()) {
           await ctx.deleteMessage();
-          await muteUser(ctx, groupData, userId, xUsername, 30);
-          await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - used muted user's X link (@${xUsername}).`);
-          await saveGroupData(groupId, groupData);
+
+          const warn = await ctx.reply(
+            `⚠️ That X link (@${xUsername}) has already been used by someone else.`
+          );
+          setTimeout(() => ctx.deleteMessage(warn.message_id), 3000);
           return;
         }
       }
-      
-      // Check for duplicate X username
-      let duplicateFound = false;
-      let duplicateUserId = null;
-      let duplicateUserData = null;
-      
-      for (const [otherUserId, otherUserData] of groupData.userLinks.entries()) {
-        if (otherUserData.xUsername && otherUserData.xUsername.toLowerCase() === xUsername.toLowerCase()) {
-          duplicateFound = true;
-          duplicateUserId = otherUserId;
-          duplicateUserData = otherUserData;
-          break;
-        }
-      }
-      
-      if (duplicateFound) {
-        await ctx.deleteMessage();
-        await muteUser(ctx, groupData, duplicateUserId, xUsername, 30);
-        await muteUser(ctx, groupData, userId, xUsername, 30);
-        await ctx.reply(`@${duplicateUserData?.tgUsername || 'User1'} and @${ctx.from.username || ctx.from.first_name} muted for 30 minutes - same X username (@${xUsername}) detected.`);
-        await saveGroupData(groupId, groupData);
-        return;
-      }
-      
-      // ✅ VALID LINK - Save and react with emoji
+
+      // ---------- SAVE VALID X LINK ----------
       groupData.userLinks.set(userId, {
         tgUsername: ctx.from.username || ctx.from.first_name,
         tgUserId: userId,
-        xUsername: xUsername,
-        link: messageText,
+        xUsername,
+        link: msgText,
         userMessageId: ctx.message.message_id,
         timestamp: new Date()
       });
-      
+
       groupData.linkCount++;
       await saveGroupData(groupId, groupData);
-      
+
+      // React with emoji
       try {
         await ctx.telegram.setMessageReaction(
           ctx.chat.id,
           ctx.message.message_id,
-          [{ type: 'emoji', emoji: '🔥' }]
+          [{ type: "emoji", emoji: "🔥" }]
         );
-      } catch (error) {
-        console.error("Reaction failed:", error.description || error);
-      }
-      
-    } else {
-      // User sent NON-X link (any other link) - delete and mute 30 mins
-      if (hasLink(messageText)) {
-        await ctx.deleteMessage();
-        await muteUser(ctx, groupData, userId, null, 30);
-        await ctx.reply(`@${ctx.from.username || ctx.from.first_name} muted for 30 minutes - non-X links not allowed.`);
-        await saveGroupData(groupId, groupData);
-      }
-      // If it's not a link at all (just regular text), allow chatting
-    }
-  }
-  
-  // CHECKING PHASE
-  else if (groupData.state === BOT_STATES.CHECKING) {
-    // Check if user dropped a link in slot phase
-    if (!groupData.userLinks.has(userId)) {
-      await ctx.deleteMessage();
+      } catch (err) {}
+
       return;
     }
-    
-    // Check if user is in SR list
-    let isInSRList = false;
+
+    // Normal text allowed
+    return;
+  }
+
+// =========================================================
+//                    CHECKING PHASE
+// =========================================================
+if (groupData.state === BOT_STATES.CHECKING) {
+
+  // User must have submitted X link earlier
+  if (!groupData.userLinks.has(userId)) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  // Extract caption (for media) or text
+  const caption = ctx.message.caption || "";
+  const text = ctx.message.text || "";
+
+  // Detect links inside caption or text
+  const hasAnyLink =
+    caption.match(/https?:\/\/\S+/i) ||
+    text.match(/https?:\/\/\S+/i);
+
+  if (hasAnyLink) {
+    await ctx.deleteMessage();
+    const warn = await ctx.reply(`⚠️ Links are not allowed during checking phase.`);
+    setTimeout(() => ctx.deleteMessage(warn.message_id), 3000);
+    return;
+  }
+
+  // --------- VIDEO SUBMISSION ---------
+  const hasVideo = ctx.message.video || ctx.message.video_note;
+  if (hasVideo) {    
+    const linkData = groupData.userLinks.get(userId);
+    const xUsername = linkData.xUsername;
+    const display = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+
+    // Check SR
+    let inSR = false;
     let srNumber = null;
-    for (const [number, data] of groupData.srList.entries()) {
+
+    for (const [num, data] of groupData.srList.entries()) {
       if (data.userId === userId) {
-        isInSRList = true;
-        srNumber = number;
+        inSR = true;
+        srNumber = num;
         break;
       }
     }
-    
-    // Check if it's a VIDEO
-    const hasVideo = ctx.message.video || ctx.message.video_note;
-    
-    if (hasVideo) {
-      const linkData = groupData.userLinks.get(userId);
-      const xUsername = linkData ? linkData.xUsername : 'N/A';
-      const userDisplayName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-      const userSubmittedLink = linkData ? linkData.link : 'No link found';
-      
-      if (isInSRList) {
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) submitted new proof. SR list (#${srNumber}) - wait for admin approval`);
-      } else {
-        // Add to safe users (only for videos)
-        groupData.safeUsers.set(userId, {
-          tgUsername: ctx.from.username || ctx.from.first_name,
-          tgUserId: userId,
-          xUsername: xUsername,
-          timestamp: new Date(),
-          approved: true,
-          submittedLink: userSubmittedLink
-        });
-        
-        await ctx.reply(`${userDisplayName} (X: @${xUsername}) Your Video Recieved, Marked Safe ✅`);
-        await saveGroupData(groupId, groupData);
-      }
+
+    if (inSR) {
+      await ctx.reply(`${display} (X: @${xUsername}) submitted new proof. SR #${srNumber} — wait for approval`);
     } else {
-      // Not a video (could be photo, document, text, etc.), delete text messages but keep media
-      if (ctx.message.text) {
-        // Delete text messages
-        await ctx.deleteMessage();
-      }
-      // Photos and other media are ignored (not deleted, not added to safe list)
+      groupData.safeUsers.set(userId, {
+        tgUsername: ctx.from.username || ctx.from.first_name,
+        tgUserId: userId,
+        xUsername,
+        timestamp: new Date(),
+        approved: true,
+        submittedLink: linkData.link
+      });
+
+      await ctx.reply(`${display} (X: @${xUsername}) Video received — marked safe ✅`);
+      await saveGroupData(groupId, groupData);
     }
+    return;
   }
+
+  // --------- TEXT MESSAGE (delete) ---------
+  if (text && !caption) {
+    await ctx.deleteMessage();
+    return;
+  }
+
+  // --------- MEDIA WITHOUT TEXT (ALLOW) ---------
+  // images, GIFs, stickers, voice notes, documents — all allowed
+  return;
+}
 });
 
-// ============= EDITED MESSAGE HANDLER (Fixed) =============
+// =========================================================
+//                EDITED MESSAGE HANDLER
+// =========================================================
 bot.on('edited_message', async (ctx) => {
   if (!ctx.chat || ctx.chat.type === 'private') return;
   if (ctx.editedMessage.from.id === ctx.botInfo.id) return;
 
-  const groupId = ctx.chat.id;
   const userId = ctx.editedMessage.from.id.toString();
-  
   const isUserAdmin = await isAdmin(ctx, userId);
   if (isUserAdmin) return;
-  
-  let groupData = await getGroupData(groupId);
-  
-  // BLOCK ALL EDITS DURING SLOT OPEN PHASE
-  if (groupData.state === BOT_STATES.SLOT_OPEN) {
-    // Delete the edited message immediately
-    await ctx.deleteMessage();
-    
-    // Mute user for 5 minutes (not 30)
-    await muteUser(ctx, groupData, userId, null, 5);
-    
-    // Get the user's X link data if they submitted one
-    const userData = groupData.userLinks.get(userId);
-    
-    // Send warning message
-    await ctx.reply(`@${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 5 minutes - editing messages is not allowed.`);
-    
-    // If they edited their X link, remove it from tracking
-    if (userData && userData.userMessageId === ctx.editedMessage.message_id) {
-      // Remove from userLinks
-      groupData.userLinks.delete(userId);
-      groupData.linkCount = Math.max(0, groupData.linkCount - 1);
-      
-      await ctx.reply(`⚠️ Your X link has also been removed from the slot!`);
-    }
-    
-    await saveGroupData(groupId, groupData);
-  }
-  
-  // ALSO BLOCK EDITS DURING CHECKING PHASE
-  else if (groupData.state === BOT_STATES.CHECKING) {
-    // Delete the edited message immediately
-    await ctx.deleteMessage();
-    
-    // Mute user for 5 minutes
-    await muteUser(ctx, groupData, userId, null, 5);
-    
-    await ctx.reply(`@${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 5 minutes - editing messages is not allowed.`);
-    await saveGroupData(groupId, groupData);
-  }
-  
-  // Block edits in IDLE or CLOSED states too
-  else if (groupData.state === BOT_STATES.IDLE || groupData.state === BOT_STATES.CLOSED) {
-    await ctx.deleteMessage();
-    await muteUser(ctx, groupData, userId, null, 5);
-    
-    await ctx.reply(`@${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} muted for 5 minutes - editing messages is not allowed.`);
-    await saveGroupData(groupId, groupData);
-  }
+
+  // Always delete edited message
+  await ctx.deleteMessage();
+
+  const warn = await ctx.reply(
+    `⚠️ @${ctx.editedMessage.from.username || ctx.editedMessage.from.first_name} editing messages is not allowed.`
+  );
+  setTimeout(() => ctx.deleteMessage(warn.message_id), 3000);
 });
+
 
 
 // ============= AUTO RESTART ON ERROR =============
