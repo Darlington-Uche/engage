@@ -1,4 +1,5 @@
 const { Telegraf } = require('telegraf');
+require('dns').setDefaultResultOrder('ipv4first');
 const cron = require('node-cron');
 const db = require('./firebase.js');
 require('dotenv').config();
@@ -58,12 +59,12 @@ const getTrackingLink = async (groupId) => {
     const doc = await db.collection('groupTrackingLinks').doc(groupId.toString()).get();
     if (doc.exists) {
       const data = doc.data();
-      return data.link || 'https://x.com/always_alpha007';
+      return data.link || 'error';
     }
-    return 'https://x.com/always_alpha007';
+    return 'error';
   } catch (error) {
     console.error('Error getting tracking link:', error);
-    return 'https://x.com/always_alpha007';
+    return 'error';
   }
 };
 
@@ -166,7 +167,6 @@ const saveGroupData = async (groupId, data) => {
   }
 };
 
-// ============= X LINK PARSING FUNCTIONS =============
 const extractUsernameFromXLink = async (url) => {
   if (!url || typeof url !== "string") return null;
 
@@ -175,132 +175,54 @@ const extractUsernameFromXLink = async (url) => {
     u = u.toLowerCase().trim();
 
     const banned = [
-      "i", "intent", "imprint", "imprint.html", "privacy", 
+      "i", "intent", "imprint", "imprint.html", "privacy",
       "privacy.html", "status", "home", "tos", "tos.html"
     ];
 
     if (banned.includes(u)) return null;
-    if (u.includes("imprint") || u.includes("privacy") || u.includes("html")) return null;
     if (!/^[a-z0-9_]{1,25}$/i.test(u)) return null;
 
     return u;
   };
 
-  // Direct URL extraction
-  const directPatterns = [
-    /x\.com\/([^\/]+)\/status\/\d+/i,
-    /twitter\.com\/([^\/]+)\/status\/\d+/i,
-    /x\.com\/([^\/?#]+)/i,
-    /twitter\.com\/([^\/?#]+)/i,
-    /x\.com\/([^\/]+)$/i
-  ];
+  // ✅ ONLY extract Tweet ID (nothing else)
+  const idMatch =
+    url.match(/\/status\/(\d+)/i) ||
+    url.match(/\/i\/status\/(\d+)/i);
 
-  for (const p of directPatterns) {
-    const m = url.match(p);
-    const valid = cleanUsername(m?.[1]);
-    if (valid) return valid;
-  }
+  if (!idMatch) return null;
 
-  // Extract tweet ID
-  const matchId = url.match(/\/status\/(\d+)/i) || url.match(/\/i\/status\/(\d+)/i);
-  if (!matchId) return null;
-  const tweetId = matchId[1];
+  const tweetId = idMatch[1];
 
+  // ===============================
+  // 1️⃣ Twitter oEmbed (author_url)
+  // ===============================
   try {
-    // Try oEmbed
     const r = await axios.get(
       `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`,
       { timeout: 6000 }
     );
-    const m = r.data?.author_url?.match(/twitter\.com\/([^\/]+)/i);
-    const valid = cleanUsername(m?.[1]);
+
+    const match = r.data?.author_url?.match(/twitter\.com\/([^\/]+)/i);
+    const valid = cleanUsername(match?.[1]);
     if (valid) return valid;
   } catch {}
 
+  // ==================================
+  // 2️⃣ Syndication API (screen_name)
+  // ==================================
   try {
-    // Try Syndication API
     const r = await axios.get(
       `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`,
       { timeout: 6000 }
     );
+
     const valid = cleanUsername(r.data?.user?.screen_name);
     if (valid) return valid;
   } catch {}
 
   return null;
 };
-
-// ============= UPDATED GET TARGET USER FUNCTION =============
-async function getTargetUser(ctx) {
-    const msg = ctx.message;
-    const chatId = ctx.chat.id;
-
-    if (!msg || !msg.text) return null;
-
-    // 1️⃣ Reply user - most accurate
-    if (msg.reply_to_message && msg.reply_to_message.from) {
-        return msg.reply_to_message.from;
-    }
-
-    // 2️⃣ Text mention entity (Telegram provides full user object)
-    if (msg.entities) {
-        for (let e of msg.entities) {
-            if (e.type === "text_mention" && e.user) {
-                return e.user;
-            }
-        }
-    }
-
-    let username = null;
-
-    // 3️⃣ Read @username mention (safe)
-    if (msg.entities) {
-        for (let e of msg.entities) {
-            if (e.type === "mention") {
-                username = msg.text.substring(e.offset + 1, e.offset + e.length);
-            }
-        }
-    }
-
-    // 4️⃣ Or read second argument (/cmd @username)
-    if (!username) {
-        const parts = msg.text.split(" ");
-        if (parts[1] && parts[1].startsWith("@")) {
-            username = parts[1].substring(1);
-        }
-    }
-
-    if (!username) return null;
-
-    username = username.toLowerCase();
-
-    // 5️⃣ 🔥 GET ALL CHAT MEMBERS & MATCH USERNAME
-    try {
-        const admins = await ctx.telegram.getChatAdministrators(chatId);
-
-        // Try admin list first
-        let found = admins.find(m =>
-            m.user.username &&
-            m.user.username.toLowerCase() === username
-        );
-
-        if (found) return found.user;
-    } catch (err) {
-        console.log("Error reading admin list:", err.message);
-    }
-
-    // 6️⃣ 
-    try {
-        const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
-        if (member && member.user) {
-            // Bots cannot list all members
-            // Only admin list + reply + text mention works
-        }
-    } catch {}
-
-    // 
-    return null;
-}
 
 
 const isUserMutedXUsername = async (groupId, xUsername) => {
