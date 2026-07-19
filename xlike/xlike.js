@@ -45,42 +45,6 @@ function requireAllowedGroup(ctx, next) {
   return next();
 }
 
-async function getTargetUser(ctx) {
-  const msg = ctx.message;
-
-  // 1️⃣ If replying to a user
-  if (msg.reply_to_message) {
-    return msg.reply_to_message.from;
-  }
-
-  // 2️⃣ If user mentioned by username like @abc
-  if (msg.entities) {
-    for (let e of msg.entities) {
-      if (e.type === "mention") {
-        const username = msg.text.substring(e.offset + 1, e.offset + e.length); // remove @
-        try {
-          const user = await ctx.telegram.getChatMember(ctx.chat.id, username);
-          return user.user;
-        } catch (err) {}
-      }
-    }
-  }
-
-  // 3️⃣ If user ID or text name after command
-  const parts = msg.text.split(" ");
-  if (parts[1]) {
-    const id = parts[1].replace("@", "");
-
-    try {
-      const user = await ctx.telegram.getChatMember(ctx.chat.id, id);
-      return user.user;
-    } catch (err) {
-      return null;
-    }
-  }
-
-  return null;
-}
 
 async function muteAllUsers(ctx, groupData, groupId) {
   let mutedCount = 0;
@@ -110,110 +74,7 @@ async function muteAllUsers(ctx, groupData, groupId) {
   
   // Direct extractio
 
-const extractUsernameFromXLink = async (url) => {
-  if (!url || typeof url !== 'string') return null;
-  
-  // METHOD 1: Direct extraction from URL
-  const directPatterns = [
-    /https?:\/\/x\.com\/([^\/]+)\/status\/[0-9]+/i,
-    /https?:\/\/(?:www\.)?x\.com\/([^\/]+)/i,
-    /https?:\/\/twitter\.com\/([^\/]+)\/status\/[0-9]+/i,
-    /https?:\/\/(?:www\.)?twitter\.com\/([^\/]+)/i
-  ];
-  
-  for (const pattern of directPatterns) {
-    const match = url.match(pattern);
-    if (match && match[1]) {
-      const username = match[1].toLowerCase();
-      // Skip shortened links - we'll handle them separately
-      if (username === 'i' || username === 'intent') {
-        break; // Exit loop and try other methods
-      }
-      return username;
-    }
-  }
-  
-  // METHOD 2: If it's a shortened link, try to extract tweet ID
-  const shortenedPattern = /\/i\/status\/(\d+)/i;
-  const match = url.match(shortenedPattern);
-  
-  if (match && match[1]) {
-    const tweetId = match[1];
-    
-    try {
-      // Try using Twitter's oEmbed API (more reliable)
-      const oembedUrl = `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`;
-      const response = await axios.get(oembedUrl, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json'
-        }
-      });
-      
-      if (response.data && response.data.author_url) {
-        const authorMatch = response.data.author_url.match(/twitter\.com\/([^\/]+)/i);
-        if (authorMatch && authorMatch[1]) {
-          return authorMatch[1].toLowerCase();
-        }
-      }
-    } catch (error) {
-      console.log('oEmbed method failed:', error.message);
-    }
-    
-    try {
-      // METHOD 3: Try using Twitter's syndication API (no API key needed)
-      const syndicationUrl = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`;
-      const response = await axios.get(syndicationUrl, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      if (response.data && response.data.user) {
-        return response.data.user.screen_name.toLowerCase();
-      }
-    } catch (error) {
-      console.log('Syndication method failed:', error.message);
-    }
-    
-    try {
-      // METHOD 4: Try to fetch the page and parse HTML
-      const htmlResponse = await axios.get(`https://twitter.com/i/status/${tweetId}`, {
-        timeout: 5000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      const html = htmlResponse.data;
-      
-      // Try to find username in meta tags
-      const metaPatterns = [
-        /"screen_name":"([^"]+)"/i,
-        /"userScreenName":"([^"]+)"/i,
-        /twitter\.com\/([^\/"]+)/i,
-        /content="https:\/\/twitter\.com\/([^\/"]+)/i
-      ];
-      
-      for (const pattern of metaPatterns) {
-        const metaMatch = html.match(pattern);
-        if (metaMatch && metaMatch[1] && metaMatch[1] !== 'i' && metaMatch[1] !== 'intent') {
-          return metaMatch[1].toLowerCase();
-        }
-      }
-    } catch (error) {
-      console.log('HTML parsing method failed:', error.message);
-    }
-  }
-  
-  return null;
-};
-const isXLink = (text) => {
-  if (!text || typeof text !== 'string') return false;
-  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/.+/i.test(text);
-};
+const { extractUsernameFromXLink, isXLink } = require('../lib/xlink-basic.js');
 
 const isAdmin = async (ctx, userId) => {
   try {
@@ -1516,7 +1377,10 @@ bot.command('mute', requireAllowedGroup, async (ctx) => {
   let durationMinutes = 30; // Default 30 minutes
   
   if (durationStr) {
-    if (durationStr.endsWith('h')) {
+    if (durationStr.endsWith('s')) {
+      const seconds = parseInt(durationStr);
+      durationMinutes = Math.max(1, Math.ceil(seconds / 60));
+    } else if (durationStr.endsWith('h')) {
       const hours = parseInt(durationStr);
       durationMinutes = hours * 60;
     } else if (durationStr.endsWith('d')) {
@@ -1952,7 +1816,10 @@ bot.command('xmute', async (ctx) => {
   let durationMinutes = 30; // Default 30 minutes
   
   if (durationStr) {
-    if (durationStr.endsWith('h')) {
+    if (durationStr.endsWith('s')) {
+      const seconds = parseInt(durationStr);
+      durationMinutes = Math.max(1, Math.ceil(seconds / 60));
+    } else if (durationStr.endsWith('h')) {
       const hours = parseInt(durationStr);
       durationMinutes = hours * 60;
     } else if (durationStr.endsWith('d')) {
@@ -2416,230 +2283,6 @@ bot.command('xbanlist', async (ctx) => {
   await ctx.reply(banList, { parse_mode: "Markdown" });
 });
 
-// ============= HELPER FUNCTION FOR DURATION TEXT =============
-function getDurationText(minutes) {
-  if (minutes < 60) {
-    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-  } else if (minutes < 24 * 60) {
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    if (remainingMinutes === 0) {
-      return `${hours} hour${hours !== 1 ? 's' : ''}`;
-    }
-    return `${hours} hour${hours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
-  } else {
-    const days = Math.floor(minutes / (24 * 60));
-    const remainingHours = Math.floor((minutes % (24 * 60)) / 60);
-    if (remainingHours === 0) {
-      return `${days} day${days !== 1 ? 's' : ''}`;
-    }
-    return `${days} day${days !== 1 ? 's' : ''} ${remainingHours} hour${remainingHours !== 1 ? 's' : ''}`;
-  }
-}
-
-// ============= XBAN COMMAND - BAN BY X USERNAME =============
-bot.command('xban', async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  const args = ctx.message.text.split(' ');
-  
-  if (args.length < 2) {
-    return ctx.reply('❌ Usage: /xban <x_username> [reason]\n\nExamples:\n/xban username\n/xban username Spamming\n\nThis bans the user who submitted this X username during slot phase.');
-  }
-  
-  const xUsername = args[1].replace('@', '').toLowerCase().trim();
-  const reason = args.slice(2).join(' ') || 'No reason provided';
-  
-  let groupData = await getGroupData(groupId);
-  
-  // Find user by X username in userLinks
-  let targetUserId = null;
-  let targetUserData = null;
-  let targetTGUsername = null;
-  
-  // Search through userLinks for matching X username
-  for (const [tgUserId, userData] of groupData.userLinks.entries()) {
-    if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
-      targetUserId = tgUserId;
-      targetUserData = userData;
-      targetTGUsername = userData.tgUsername;
-      break;
-    }
-  }
-  
-  if (!targetUserId) {
-    // Try searching in safeUsers and scamUsers
-    for (const [tgUserId, userData] of groupData.safeUsers.entries()) {
-      if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
-        targetUserId = tgUserId;
-        const linkData = groupData.userLinks.get(tgUserId);
-        targetUserData = linkData;
-        targetTGUsername = userData.tgUsername;
-        break;
-      }
-    }
-    
-    if (!targetUserId) {
-      for (const [tgUserId, userData] of groupData.scamUsers.entries()) {
-        if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
-          targetUserId = tgUserId;
-          targetUserData = userData;
-          targetTGUsername = userData.tgUsername;
-          break;
-        }
-      }
-    }
-  }
-  
-  if (!targetUserId) {
-    return ctx.reply(`❌ No user found with X username: @${xUsername}\n\nNote: This command only works for users who participated in the slot phase.`);
-  }
-  
-  // Check if trying to ban admin
-  if (await isAdmin(ctx, targetUserId)) {
-    return ctx.reply('❌ Cannot ban an administrator.');
-  }
-  
-  try {
-    // Get user info from Telegram
-    let chatMember;
-    try {
-      chatMember = await ctx.telegram.getChatMember(groupId, targetUserId);
-    } catch (error) {
-      return ctx.reply(`❌ User @${xUsername} (TG: ${targetTGUsername}) is not in the group or left already.`);
-    }
-    
-    // Ban the user
-    await ctx.banChatMember(targetUserId);
-    
-    // Also mute the X username for future slots
-    const muteData = {
-      xUsername: xUsername,
-      tgUsername: targetTGUsername,
-      tgUserId: targetUserId,
-      mutedAt: new Date(),
-      mutedBy: ctx.from.id,
-      reason: reason,
-      type: 'xban'
-    };
-    
-    // Save to both local cache and Firebase
-    groupData.mutedXUsernames.set(xUsername, muteData);
-    await saveMutedUserToFirebase(groupId, xUsername, targetTGUsername, ctx.from.id);
-    
-    await saveGroupData(groupId, groupData);
-    
-    const adminName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-    const message = `🚫 *X Username Ban Applied*\n\n` +
-      `❌ *X Username:* @${xUsername}\n` +
-      `👤 *Telegram User:* ${targetTGUsername}\n` +
-      `📝 *Reason:* ${reason}\n` +
-      `👮 *Banned by:* ${adminName}\n\n` +
-      `⚠️ This X username is now blocked from future slots.`;
-    
-    await ctx.reply(message, { parse_mode: "Markdown" });
-    
-  } catch (error) {
-    console.error('Error in xban command:', error);
-    await ctx.reply(`❌ Failed to ban user with X username: @${xUsername}\nError: ${error.message}`);
-  }
-});
-
-// ============= XUNBAN COMMAND - UNBAN BY X USERNAME =============
-bot.command('xunban', async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  const args = ctx.message.text.split(' ');
-  
-  if (args.length < 2) {
-    return ctx.reply('❌ Usage: /xunban <x_username>\n\nExample: /xunban username\n\nThis unbans the user associated with this X username.');
-  }
-  
-  const xUsername = args[1].replace('@', '').toLowerCase().trim();
-  
-  let groupData = await getGroupData(groupId);
-  
-  // Find user by X username in userLinks
-  let targetUserId = null;
-  let targetUserData = null;
-  let targetTGUsername = null;
-  
-  // Search through userLinks for matching X username
-  for (const [tgUserId, userData] of groupData.userLinks.entries()) {
-    if (userData.xUsername && userData.xUsername.toLowerCase() === xUsername) {
-      targetUserId = tgUserId;
-      targetUserData = userData;
-      targetTGUsername = userData.tgUsername;
-      break;
-    }
-  }
-  
-  if (!targetUserId) {
-    // Also check mutedXUsernames for previously banned X usernames
-    if (groupData.mutedXUsernames.has(xUsername)) {
-      const muteData = groupData.mutedXUsernames.get(xUsername);
-      targetUserId = muteData.tgUserId;
-      targetTGUsername = muteData.tgUsername;
-    }
-  }
-  
-  if (!targetUserId) {
-    return ctx.reply(`❌ No user found with X username: @${xUsername}\n\nNote: This command works for users who participated in slots or were previously banned via /xban.`);
-  }
-  
-  try {
-    // Try to unban the user
-    await ctx.unbanChatMember(targetUserId);
-    
-    // Remove from mutedXUsernames
-    groupData.mutedXUsernames.delete(xUsername);
-    
-    // Also remove from Firebase if exists
-    try {
-      await db.collection('mutedUsers').doc(`${groupId}_${xUsername}`).delete();
-    } catch (error) {
-      console.log('Error removing from Firebase:', error);
-    }
-    
-    await saveGroupData(groupId, groupData);
-    
-    const adminName = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-    const message = `✅ *X Username Unban Applied*\n\n` +
-      `✅ *X Username:* @${xUsername}\n` +
-      `👤 *Telegram User:* ${targetTGUsername || 'Unknown'}\n` +
-      `👮 *Unbanned by:* ${adminName}\n\n` +
-      `⚠️ This X username is now allowed in future slots.`;
-    
-    await ctx.reply(message, { parse_mode: "Markdown" });
-    
-  } catch (error) {
-    console.error('Error in xunban command:', error);
-    
-    // Even if unban fails, remove from blocked list
-    groupData.mutedXUsernames.delete(xUsername);
-    try {
-      await db.collection('mutedUsers').doc(`${groupId}_${xUsername}`).delete();
-    } catch (dbError) {
-      console.log('Error removing from Firebase:', dbError);
-    }
-    await saveGroupData(groupId, groupData);
-    
-    await ctx.reply(`✅ X username @${xUsername} has been removed from the blocked list, but user might not be in the group or already unbanned.\n\nError: ${error.message}`);
-  }
-});
-
 // ============= REQUEST COMMAND (Simplified) =============
 bot.command('request', async (ctx) => {
   const groupId = ctx.chat.id;
@@ -2821,46 +2464,6 @@ bot.command('requeststats', async (ctx) => {
     console.error('Error in requeststats:', error);
     await ctx.reply('❌ Error fetching statistics.');
   }
-});
-
-// ============= XBANLIST COMMAND (OPTIONAL) - VIEW BANNED X USERNAMES =============
-bot.command('xbanlist', async (ctx) => {
-  const groupId = ctx.chat.id;
-  const userId = ctx.from.id;
-  
-  if (!await isAdmin(ctx, userId)) {
-    await ctx.deleteMessage();
-    return;
-  }
-  
-  let groupData = await getGroupData(groupId);
-  
-  if (groupData.mutedXUsernames.size === 0) {
-    return ctx.reply('📋 No X usernames are currently banned.');
-  }
-  
-  let banList = '🚫 *BANNED X USERNAMES*\n━━━━━━━━━━━━━━━━━━\n\n';
-  let counter = 1;
-  
-  const now = new Date();
-  
-  for (const [xUsername, banData] of groupData.mutedXUsernames.entries()) {
-    const banDate = new Date(banData.mutedAt);
-    const daysAgo = Math.floor((now - banDate) / (1000 * 60 * 60 * 24));
-    const hoursAgo = Math.floor((now - banDate) / (1000 * 60 * 60));
-    
-    const timeAgo = daysAgo > 0 ? `${daysAgo} day${daysAgo !== 1 ? 's' : ''} ago` : `${hoursAgo} hour${hoursAgo !== 1 ? 's' : ''} ago`;
-    
-    banList += `${counter}. X: @${xUsername}\n`;
-    banList += `   👤 TG: ${banData.tgUsername || 'Unknown'}\n`;
-    banList += `   ⏰ Banned: ${timeAgo}\n`;
-    banList += `   📝 Reason: ${banData.reason || 'No reason'}\n\n`;
-    counter++;
-  }
-  
-  banList += `━━━━━━━━━━━━━━━━━━\n📊 Total: ${counter - 1} banned X usernames`;
-  
-  await ctx.reply(banList, { parse_mode: "Markdown" });
 });
 
 bot.command('end', async (ctx) => {

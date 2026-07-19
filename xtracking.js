@@ -38,11 +38,6 @@ function requireAllowedGroup(ctx, next) {
   return next();
 }
 
-const isXLink = (text) => {
-  if (!text || typeof text !== 'string') return false;
-  return /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/.+/i.test(text);
-};
-
 const isAdmin = async (ctx, userId) => {
   try {
     const member = await ctx.telegram.getChatMember(ctx.chat.id, userId);
@@ -167,62 +162,7 @@ const saveGroupData = async (groupId, data) => {
   }
 };
 
-const extractUsernameFromXLink = async (url) => {
-  if (!url || typeof url !== "string") return null;
-
-  const cleanUsername = (u) => {
-    if (!u) return null;
-    u = u.toLowerCase().trim();
-
-    const banned = [
-      "i", "intent", "imprint", "imprint.html", "privacy",
-      "privacy.html", "status", "home", "tos", "tos.html"
-    ];
-
-    if (banned.includes(u)) return null;
-    if (!/^[a-z0-9_]{1,25}$/i.test(u)) return null;
-
-    return u;
-  };
-
-  // ✅ ONLY extract Tweet ID (nothing else)
-  const idMatch =
-    url.match(/\/status\/(\d+)/i) ||
-    url.match(/\/i\/status\/(\d+)/i);
-
-  if (!idMatch) return null;
-
-  const tweetId = idMatch[1];
-
-  // ===============================
-  // 1️⃣ Twitter oEmbed (author_url)
-  // ===============================
-  try {
-    const r = await axios.get(
-      `https://publish.twitter.com/oembed?url=https://twitter.com/i/status/${tweetId}`,
-      { timeout: 6000 }
-    );
-
-    const match = r.data?.author_url?.match(/twitter\.com\/([^\/]+)/i);
-    const valid = cleanUsername(match?.[1]);
-    if (valid) return valid;
-  } catch {}
-
-  // ==================================
-  // 2️⃣ Syndication API (screen_name)
-  // ==================================
-  try {
-    const r = await axios.get(
-      `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}`,
-      { timeout: 6000 }
-    );
-
-    const valid = cleanUsername(r.data?.user?.screen_name);
-    if (valid) return valid;
-  } catch {}
-
-  return null;
-};
+const { extractUsernameFromXLink, isXLink } = require('./lib/xlink-standard.js');
 
 
 const isUserMutedXUsername = async (groupId, xUsername) => {
@@ -1665,7 +1605,10 @@ bot.command('xmute', async (ctx) => {
   let durationMinutes = 30; // Default 30 minutes
   
   if (durationStr) {
-    if (durationStr.endsWith('h')) {
+    if (durationStr.endsWith('s')) {
+      const seconds = parseInt(durationStr);
+      durationMinutes = Math.max(1, Math.ceil(seconds / 60));
+    } else if (durationStr.endsWith('h')) {
       const hours = parseInt(durationStr);
       durationMinutes = hours * 60;
     } else if (durationStr.endsWith('d')) {
@@ -1833,7 +1776,10 @@ bot.command('mute', async (ctx) => {
   let durationMinutes = 30; // Default 30 minutes
   
   if (durationStr) {
-    if (durationStr.endsWith('h')) {
+    if (durationStr.endsWith('s')) {
+      const seconds = parseInt(durationStr);
+      durationMinutes = Math.max(1, Math.ceil(seconds / 60));
+    } else if (durationStr.endsWith('h')) {
       const hours = parseInt(durationStr);
       durationMinutes = hours * 60;
     } else if (durationStr.endsWith('d')) {
